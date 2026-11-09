@@ -112,6 +112,9 @@ impl MailStorageRepository {
             "#,
         )?;
 
+        // Migration for databases created before body_snippet was added
+        let _ = conn.execute("ALTER TABLE emails ADD COLUMN body_snippet TEXT;", []);
+
         Ok(())
     }
 

@@ -408,28 +408,28 @@ function formatDate(ts: number): string {
           >
             <div class="flex items-center justify-between">
               <span
-                v-if="email.classification === 'PROTECTED_INVOICE'"
+                v-if="email.classification?.toUpperCase() === 'PROTECTED_INVOICE'"
                 class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/50 text-[10px] flex items-center space-x-1"
               >
                 <FileText class="w-3 h-3" />
                 <span>Facture / Commande (PDF)</span>
               </span>
               <span
-                v-else-if="email.classification === 'PROTECTED_FLAGGED'"
+                v-else-if="email.classification?.toUpperCase() === 'PROTECTED_FLAGGED'"
                 class="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800/50 text-[10px] flex items-center space-x-1"
               >
                 <Star class="w-3 h-3 text-amber-400" />
                 <span>Email Étoilé / Marqué</span>
               </span>
               <span
-                v-else-if="email.classification === 'PROTECTED_USER'"
+                v-else-if="email.classification?.toUpperCase() === 'PROTECTED_USER'"
                 class="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800/50 text-[10px] flex items-center space-x-1"
               >
                 <ShieldCheck class="w-3 h-3 text-purple-400" />
                 <span>Protection Manuelle</span>
               </span>
               <span
-                v-else-if="email.classification === 'RECENT'"
+                v-else-if="email.classification?.toUpperCase() === 'RECENT'"
                 class="px-2 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800/50 text-[10px] flex items-center space-x-1"
               >
                 <Clock class="w-3 h-3" />
@@ -540,31 +540,31 @@ function formatDate(ts: number): string {
           <div class="min-w-0 pr-4">
             <div class="flex items-center space-x-2 mb-1">
               <span
-                v-if="store.previewedEmail.classification === 'PURGEABLE'"
+                v-if="store.previewedEmail.classification?.toUpperCase() === 'PURGEABLE'"
                 class="px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800/50 text-[10px]"
               >
                 Candidat Corbeille
               </span>
               <span
-                v-else-if="store.previewedEmail.classification === 'PROTECTED_INVOICE'"
+                v-else-if="store.previewedEmail.classification?.toUpperCase() === 'PROTECTED_INVOICE'"
                 class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/50 text-[10px]"
               >
                 Facture / Reçu protégé (PDF)
               </span>
               <span
-                v-else-if="store.previewedEmail.classification === 'PROTECTED_FLAGGED'"
+                v-else-if="store.previewedEmail.classification?.toUpperCase() === 'PROTECTED_FLAGGED'"
                 class="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800/50 text-[10px]"
               >
                 Message Étoilé
               </span>
               <span
-                v-else-if="store.previewedEmail.classification === 'PROTECTED_USER'"
+                v-else-if="store.previewedEmail.classification?.toUpperCase() === 'PROTECTED_USER'"
                 class="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800/50 text-[10px]"
               >
                 Protégé Manuellement
               </span>
               <span
-                v-else-if="store.previewedEmail.classification === 'RECENT'"
+                v-else-if="store.previewedEmail.classification?.toUpperCase() === 'RECENT'"
                 class="px-2 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800/50 text-[10px]"
               >
                 Récent (&lt; 60j)
@@ -637,17 +637,17 @@ function formatDate(ts: number): string {
               @click="store.toggleEmailProtection(store.previewedEmail)"
               :class="[
                 'px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition',
-                store.previewedEmail.classification === 'PURGEABLE'
+                store.previewedEmail.classification?.toUpperCase() === 'PURGEABLE'
                   ? 'bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 border border-emerald-700/50'
                   : 'bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-700/50'
               ]"
             >
               <component
-                :is="store.previewedEmail.classification === 'PURGEABLE' ? ShieldCheck : Trash2"
+                :is="store.previewedEmail.classification?.toUpperCase() === 'PURGEABLE' ? ShieldCheck : Trash2"
                 class="w-4 h-4"
               />
               <span>
-                {{ store.previewedEmail.classification === 'PURGEABLE' ? 'Basculer en Protégé' : 'Rendre Purgeable' }}
+                {{ store.previewedEmail.classification?.toUpperCase() === 'PURGEABLE' ? 'Basculer en Protégé' : 'Rendre Purgeable' }}
               </span>
             </button>
           </div>

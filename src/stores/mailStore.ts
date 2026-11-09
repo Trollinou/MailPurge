@@ -60,19 +60,19 @@ export const useMailStore = defineStore("mail", {
 
     purgeableEmails: (state) => {
       return state.selectedDomainEmails.filter(
-        (e) => e.classification === "PURGEABLE"
+        (e) => String(e.classification).toUpperCase() === "PURGEABLE"
       );
     },
 
     protectedEmails: (state) => {
       return state.selectedDomainEmails.filter(
-        (e) => e.classification !== "PURGEABLE"
+        (e) => String(e.classification).toUpperCase() !== "PURGEABLE"
       );
     },
 
     allPurgeableSelected: (state) => {
       const purgeable = state.selectedDomainEmails.filter(
-        (e) => e.classification === "PURGEABLE"
+        (e) => String(e.classification).toUpperCase() === "PURGEABLE"
       );
       if (purgeable.length === 0) return false;
       return purgeable.every((e) => state.selectedUidsToPurge.has(e.uid));
@@ -137,7 +137,7 @@ export const useMailStore = defineStore("mail", {
 
         // Pre-select all purgeable candidates by default
         for (const email of this.selectedDomainEmails) {
-          if (email.classification === "PURGEABLE") {
+          if (String(email.classification).toUpperCase() === "PURGEABLE") {
             this.selectedUidsToPurge.add(email.uid);
           }
         }
@@ -179,8 +179,8 @@ export const useMailStore = defineStore("mail", {
 
     async toggleEmailProtection(email: EmailRecord) {
       if (!this.currentAccountId) return;
-      const targetClassification =
-        email.classification === "PURGEABLE" ? "PROTECTED_USER" : "PURGEABLE";
+      const isPurgeable = String(email.classification).toUpperCase() === "PURGEABLE";
+      const targetClassification = isPurgeable ? "PROTECTED_USER" : "PURGEABLE";
 
       try {
         await invoke("update_email_classification", {
