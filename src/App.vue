@@ -75,10 +75,6 @@ async function handlePasswordSubmit() {
 onMounted(async () => {
   await store.initSyncListener();
   await store.fetchAccounts();
-  if (store.accounts.length === 0) {
-    // Automatically load demo data on first launch if empty
-    await store.loadDemoData();
-  }
 });
 
 function formatDate(ts: number): string {
@@ -130,6 +126,7 @@ function formatDate(ts: number): string {
                 <span>+ Compte</span>
               </button>
               <button
+                v-if="store.accounts.length === 0"
                 @click="store.loadDemoData"
                 class="text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 text-[11px] normal-case"
                 title="Recharger le jeu d'essai démo"
@@ -173,7 +170,6 @@ function formatDate(ts: number): string {
                     <KeyRound class="w-3 h-3" />
                   </button>
                   <button
-                    v-if="account.id !== 1"
                     @click.stop="accountToDelete = account"
                     class="text-slate-400 hover:text-rose-400 p-1 rounded hover:bg-slate-800/80 transition"
                     title="Supprimer ce compte"
@@ -186,6 +182,20 @@ function formatDate(ts: number): string {
                 </div>
               </div>
               <span class="text-[11px] text-slate-400 truncate">{{ account.email }}</span>
+            </div>
+
+            <div
+              v-if="store.accounts.length === 0"
+              class="p-4 text-center rounded-lg border border-dashed border-slate-800 text-slate-500 text-xs space-y-2"
+            >
+              <p>Aucun compte connecté</p>
+              <button
+                @click="store.loadDemoData"
+                class="text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1 text-[11px] underline"
+              >
+                <Sparkles class="w-3 h-3" />
+                <span>Charger le mode démo</span>
+              </button>
             </div>
           </div>
 
@@ -436,7 +446,7 @@ function formatDate(ts: number): string {
             Saisir le mot de passe
           </button>
           <button
-            v-if="store.currentAccountId && store.currentAccountId !== 1"
+            v-if="store.currentAccountId"
             @click="accountToDelete = store.currentAccount"
             class="px-2.5 py-1 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/50 rounded-lg text-xs font-medium transition"
           >
@@ -523,19 +533,36 @@ function formatDate(ts: number): string {
           </div>
           <div class="space-y-1">
             <h3 class="text-sm font-semibold text-slate-300">
-              Aucun email synchronisé
+              {{ store.accounts.length === 0 ? "Aucun compte connecté" : "Aucun email synchronisé" }}
             </h3>
             <p class="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-              Cette boîte de messagerie n'a pas encore été analysée ou ne contient aucun email en cache local.
+              {{ store.accounts.length === 0 ? "Ajoutez une boîte de messagerie ou lancez la démonstration pour commencer." : "Cette boîte de messagerie n'a pas encore été analysée ou ne contient aucun email en cache local." }}
             </p>
           </div>
           <button
+            v-if="store.accounts.length > 0"
             @click="store.syncCurrentAccount"
             class="inline-flex items-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold rounded-xl text-xs transition shadow-lg shadow-sky-500/10"
           >
             <RefreshCw class="w-3.5 h-3.5" />
             <span>Lancer la synchronisation</span>
           </button>
+          <div v-else class="flex items-center justify-center gap-2">
+            <button
+              @click="isAddAccountModalOpen = true"
+              class="inline-flex items-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold rounded-xl text-xs transition shadow-lg shadow-sky-500/10"
+            >
+              <Plus class="w-3.5 h-3.5" />
+              <span>Ajouter un compte</span>
+            </button>
+            <button
+              @click="store.loadDemoData"
+              class="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600/30 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/40 font-semibold rounded-xl text-xs transition"
+            >
+              <Sparkles class="w-3.5 h-3.5" />
+              <span>Charger la démo</span>
+            </button>
+          </div>
         </div>
       </div>
     </main>
