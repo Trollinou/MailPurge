@@ -47,7 +47,7 @@ impl PurgeExecutor {
     /// - Groups purgeable emails by folder.
     /// - Chunks operations into batches of `batch_size` (max 500 by default).
     /// - If `dry_run` is true, simulates execution without calling the provider.
-    pub fn execute<P: MailProviderPort + ?Sized>(
+    pub async fn execute<P: MailProviderPort + ?Sized>(
         provider: &mut P,
         candidates: &[PurgeCandidate],
         trash_folder_path: &str,
@@ -91,7 +91,9 @@ impl PurgeExecutor {
 
             if !config.dry_run {
                 for chunk in chunks {
-                    provider.move_to_trash(&folder, chunk, trash_folder_path)?;
+                    provider
+                        .move_to_trash(&folder, chunk, trash_folder_path)
+                        .await?;
                 }
             }
         }

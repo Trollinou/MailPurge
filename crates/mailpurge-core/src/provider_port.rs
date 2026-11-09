@@ -1,4 +1,5 @@
 use crate::folder_scanner::FolderInfo;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -33,29 +34,32 @@ pub enum MailProviderError {
 }
 
 /// Hexagonal port interface defining mail provider interactions (IMAP, XOAUTH2, Mock).
-pub trait MailProviderPort {
+#[async_trait]
+pub trait MailProviderPort: Send + Sync {
     /// Returns the list of all available mail folders on the server.
-    fn list_folders(&self) -> Result<Vec<FolderInfo>, MailProviderError>;
+    async fn list_folders(&self) -> Result<Vec<FolderInfo>, MailProviderError>;
 
     /// Returns the total message count in the specified folder.
-    fn get_folder_message_count(&self, folder_path: &str) -> Result<u32, MailProviderError> {
-        self.fetch_envelopes(folder_path).map(|v| v.len() as u32)
+    async fn get_folder_message_count(&self, folder_path: &str) -> Result<u32, MailProviderError> {
+        self.fetch_envelopes(folder_path)
+            .await
+            .map(|v| v.len() as u32)
     }
 
     /// Fetches all email envelopes / metadata from a specific folder.
-    fn fetch_envelopes(
+    async fn fetch_envelopes(
         &self,
         folder_path: &str,
     ) -> Result<Vec<RawEmailEnvelope>, MailProviderError>;
 
     /// Fetches email envelopes within a 1-based sequence range `[start_seq, end_seq]`.
-    fn fetch_envelopes_range(
+    async fn fetch_envelopes_range(
         &self,
         folder_path: &str,
         start_seq: u32,
         end_seq: u32,
     ) -> Result<Vec<RawEmailEnvelope>, MailProviderError> {
-        let all = self.fetch_envelopes(folder_path)?;
+        let all = self.fetch_envelopes(folder_path).await?;
         let start_idx = (start_seq.saturating_sub(1)) as usize;
         let end_idx = (end_seq as usize).min(all.len());
         if start_idx >= all.len() || start_idx >= end_idx {
@@ -65,7 +69,7 @@ pub trait MailProviderPort {
     }
 
     /// Moves a list of UIDs from a folder to the trash folder. Returns count of moved items.
-    fn move_to_trash(
+    async fn move_to_trash(
         &mut self,
         folder_path: &str,
         uids: &[u32],
@@ -73,10 +77,10 @@ pub trait MailProviderPort {
     ) -> Result<usize, MailProviderError>;
 
     /// Empties all items from the specified trash folder. Returns count of deleted items.
-    fn empty_trash(&mut self, trash_folder_path: &str) -> Result<usize, MailProviderError>;
+    async fn empty_trash(&mut self, trash_folder_path: &str) -> Result<usize, MailProviderError>;
 
     /// Fetches an on-demand body preview snippet for a specific email UID without marking it as read.
-    fn fetch_body_snippet(
+    async fn fetch_body_snippet(
         &mut self,
         folder_path: &str,
         uid: u32,

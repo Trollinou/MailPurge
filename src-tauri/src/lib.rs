@@ -30,12 +30,12 @@ pub struct UnsubscribeReport {
 
 pub struct AppState {
     pub storage: MailStorageRepository,
-    pub mock_provider: Mutex<MockMailProvider>,
+    pub mock_provider: tokio::sync::Mutex<MockMailProvider>,
     pub secret_cache: Arc<Mutex<HashMap<String, String>>>,
 }
 
-fn get_trash_folder_path(provider: &dyn MailProviderPort) -> String {
-    match provider.list_folders() {
+async fn get_trash_folder_path(provider: &dyn MailProviderPort) -> String {
+    match provider.list_folders().await {
         Ok(folders) => mailpurge_core::folder_scanner::find_trash_folder(&folders)
             .map(|f| f.path.clone())
             .unwrap_or_else(|| "Trash".to_string()),
@@ -166,8 +166,8 @@ fn delete_account(state: State<AppState>, account_id: i64) -> Result<(), String>
 }
 
 #[tauri::command]
-fn update_account_password(
-    state: State<AppState>,
+async fn update_account_password(
+    state: State<'_, AppState>,
     account_id: i64,
     password: String,
 ) -> Result<(), String> {
@@ -204,8 +204,9 @@ fn update_account_password(
     let test_provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
     let mut session = test_provider
         .connect_session()
+        .await
         .map_err(|e| format!("Échec d'authentification avec ce mot de passe: {e}"))?;
-    let _ = session.logout();
+    let _ = session.logout().await;
 
     KeyringStore::save_secret(&account.email, &password)
         .map_err(|e| format!("Erreur trousseau système: {e}"))?;
@@ -238,8 +239,8 @@ fn get_emails_by_domain(
 }
 
 #[tauri::command]
-fn fetch_email_preview(
-    state: State<AppState>,
+async fn fetch_email_preview(
+    state: State<'_, AppState>,
     account_id: i64,
     folder_path: String,
     uid: u32,
@@ -271,18 +272,17 @@ fn fetch_email_preview(
         .ok_or_else(|| format!("Compte introuvable: {account_id}"))?;
 
     let snippet = if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
-        let mut provider = state
-            .mock_provider
-            .lock()
-            .map_err(|_| "Verrouillage mock échoué".to_string())?;
+        let mut provider = state.mock_provider.lock().await;
         provider
             .fetch_body_snippet(&folder_path, uid)
+            .await
             .unwrap_or_default()
     } else {
         let imap_config = resolve_imap_config(&account, &state.secret_cache)?;
         let mut provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
         provider
             .fetch_body_snippet(&folder_path, uid)
+            .await
             .map_err(|e| format!("Erreur chargement aperçu: {e}"))?
     };
 
@@ -296,8 +296,8 @@ fn fetch_email_preview(
 }
 
 #[tauri::command]
-fn execute_purge(
-    state: State<AppState>,
+async fn execute_purge(
+    state: State<'_, AppState>,
     account_id: i64,
     root_domain: String,
     uids: Vec<u32>,
@@ -333,18 +333,17 @@ fn execute_purge(
         .ok_or_else(|| format!("Compte introuvable: {account_id}"))?;
 
     let report = if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
-        let mut provider = state
-            .mock_provider
-            .lock()
-            .map_err(|_| "Verrouillage provider échoué".to_string())?;
+        let mut provider = state.mock_provider.lock().await;
         PurgeExecutor::execute(&mut *provider, &candidates, "Corbeille", &config)
+            .await
             .map_err(|e| format!("Erreur exécution de purge: {e}"))?
     } else {
         let imap_config = resolve_imap_config(&account, &state.secret_cache)?;
         let mut provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
-        let trash_folder = get_trash_folder_path(&provider);
+        let trash_folder = get_trash_folder_path(&provider).await;
         eprintln!("[Purge] Dossier corbeille identifié : '{trash_folder}'");
         PurgeExecutor::execute(&mut provider, &candidates, &trash_folder, &config)
+            .await
             .map_err(|e| format!("Erreur exécution de purge: {e}"))?
     };
 
@@ -386,7 +385,7 @@ fn update_email_classification(
 }
 
 #[tauri::command]
-fn empty_trash(state: State<AppState>, account_id: i64) -> Result<usize, String> {
+async fn empty_trash(state: State<'_, AppState>, account_id: i64) -> Result<usize, String> {
     let account = state
         .storage
         .get_account(account_id)
@@ -394,20 +393,19 @@ fn empty_trash(state: State<AppState>, account_id: i64) -> Result<usize, String>
         .ok_or_else(|| format!("Compte introuvable: {account_id}"))?;
 
     if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
-        let mut provider = state
-            .mock_provider
-            .lock()
-            .map_err(|_| "Verrouillage provider échoué".to_string())?;
+        let mut provider = state.mock_provider.lock().await;
         provider
             .empty_trash("Corbeille")
+            .await
             .map_err(|e| format!("Erreur vidage corbeille: {e}"))
     } else {
         let imap_config = resolve_imap_config(&account, &state.secret_cache)?;
         let mut provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
-        let trash_folder = get_trash_folder_path(&provider);
+        let trash_folder = get_trash_folder_path(&provider).await;
         eprintln!("[EmptyTrash] Dossier corbeille identifié : '{trash_folder}'");
         provider
             .empty_trash(&trash_folder)
+            .await
             .map_err(|e| format!("Erreur vidage corbeille: {e}"))
     }
 }
@@ -425,8 +423,8 @@ fn get_distribution_lists(
 }
 
 #[tauri::command]
-fn unsubscribe_and_purge(
-    state: State<AppState>,
+async fn unsubscribe_and_purge(
+    state: State<'_, AppState>,
     account_id: i64,
     root_domain: String,
     list_id: String,
@@ -485,17 +483,16 @@ fn unsubscribe_and_purge(
             .ok_or_else(|| format!("Compte introuvable: {account_id}"))?;
 
         let report = if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
-            let mut provider = state
-                .mock_provider
-                .lock()
-                .map_err(|_| "Verrouillage provider échoué".to_string())?;
+            let mut provider = state.mock_provider.lock().await;
             PurgeExecutor::execute(&mut *provider, &candidates, "Corbeille", &config)
+                .await
                 .map_err(|e| format!("Erreur mise en corbeille: {e}"))?
         } else {
             let imap_config = resolve_imap_config(&account, &state.secret_cache)?;
             let mut provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
-            let trash_folder = get_trash_folder_path(&provider);
+            let trash_folder = get_trash_folder_path(&provider).await;
             PurgeExecutor::execute(&mut provider, &candidates, &trash_folder, &config)
+                .await
                 .map_err(|e| format!("Erreur mise en corbeille: {e}"))?
         };
 
@@ -599,7 +596,7 @@ fn start_oauth_flow(
 }
 
 #[tauri::command]
-fn add_imap_account(
+async fn add_imap_account(
     state: State<'_, AppState>,
     email: String,
     password: String,
@@ -617,8 +614,9 @@ fn add_imap_account(
     let test_provider = mailpurge_core::imap_provider::ImapProvider::new(config);
     let mut session = test_provider
         .connect_session()
+        .await
         .map_err(|e| format!("Échec de connexion au serveur IMAP ({server}:{port}) : {e}"))?;
-    let _ = session.logout();
+    let _ = session.logout().await;
 
     // 2. Save secret to OS keyring
     KeyringStore::save_secret(&email, &password)
@@ -636,7 +634,7 @@ fn add_imap_account(
 }
 
 #[tauri::command]
-fn sync_account(
+async fn sync_account(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     account_id: i64,
@@ -650,30 +648,28 @@ fn sync_account(
 
     if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
         // Mode Démo : synchroniser via le mock_provider
-        let mut mock = state
-            .mock_provider
-            .lock()
-            .map_err(|_| "Verrouillage mock échoué".to_string())?;
-        sync_engine::execute_sync(&app, &storage, account_id, &mut *mock)?;
+        let mut mock = state.mock_provider.lock().await;
+        sync_engine::execute_sync(&app, &storage, account_id, &mut *mock).await?;
         return Ok(());
     }
 
     // Compte Réel : exécuter en arrière-plan
     let app_clone = app.clone();
-    std::thread::spawn(move || {
+    tauri::async_runtime::spawn(async move {
         eprintln!(
             "[Sync] Lancement synchronisation en arrière-plan pour '{}' (ID={})...",
             account.email, account_id
         );
-        let run_res = (|| -> Result<usize, String> {
+        let run_res = async {
             let imap_config = resolve_imap_config(&account, &secret_cache)?;
             eprintln!(
                 "[Sync] Configuration IMAP résolue : serveur={}:{}, user={}",
                 imap_config.server, imap_config.port, imap_config.username
             );
             let mut provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
-            sync_engine::execute_sync(&app_clone, &storage, account_id, &mut provider)
-        })();
+            sync_engine::execute_sync(&app_clone, &storage, account_id, &mut provider).await
+        }
+        .await;
 
         if let Err(e) = &run_res {
             eprintln!("[Sync] ERREUR synchronisation compte ID={account_id} : {e}");
@@ -753,7 +749,7 @@ fn recalculate_retention(
 }
 
 #[tauri::command]
-fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
+async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, String> {
     let account = AccountRecord {
         id: 1,
         email: "etienne@entreprise-m365.fr".to_string(),
@@ -1106,10 +1102,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
     ];
 
     let mut email_records = Vec::new();
-    let mut mock_provider = state
-        .mock_provider
-        .lock()
-        .map_err(|_| "Verrouillage provider échoué".to_string())?;
+    let mut mock_provider = state.mock_provider.lock().await;
 
     for (i, item) in samples.into_iter().enumerate() {
         let uid = (i + 1) as u32;
@@ -1185,6 +1178,8 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
 }
 
 pub fn run() {
+    mailpurge_core::imap_provider::install_crypto_provider();
+
     // Choose local storage directory
     let db_path = if let Some(mut data_dir) = dirs::data_local_dir() {
         data_dir.push("mailpurge");
@@ -1202,7 +1197,7 @@ pub fn run() {
 
     let app_state = AppState {
         storage,
-        mock_provider: Mutex::new(MockMailProvider::new()),
+        mock_provider: tokio::sync::Mutex::new(MockMailProvider::new()),
         secret_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 

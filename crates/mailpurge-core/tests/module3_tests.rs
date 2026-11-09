@@ -5,8 +5,8 @@ use mailpurge_core::mock_provider::MockMailProvider;
 use mailpurge_core::provider_port::{MailProviderPort, RawEmailEnvelope};
 use mailpurge_core::purge_executor::{PurgeCandidate, PurgeConfig, PurgeExecutor};
 
-#[test]
-fn test_7_never_purge_protected_or_recent_emails() {
+#[tokio::test]
+async fn test_7_never_purge_protected_or_recent_emails() {
     let mut provider = MockMailProvider::new();
     let trash_folder = "Corbeille";
 
@@ -68,6 +68,7 @@ fn test_7_never_purge_protected_or_recent_emails() {
     };
 
     let report = PurgeExecutor::execute(&mut provider, &candidates, trash_folder, &config)
+        .await
         .expect("Purge execution should succeed");
 
     assert_eq!(report.total_candidates, 4);
@@ -76,17 +77,17 @@ fn test_7_never_purge_protected_or_recent_emails() {
     assert_eq!(report.skipped_protected_count, 3);
 
     // Verify provider state: only UID 1 moved to Corbeille
-    let inbox_emails = provider.fetch_envelopes("INBOX").unwrap();
+    let inbox_emails = provider.fetch_envelopes("INBOX").await.unwrap();
     let inbox_uids: Vec<u32> = inbox_emails.iter().map(|e| e.uid).collect();
     assert_eq!(inbox_uids, vec![2, 3, 4]);
 
-    let trash_emails = provider.fetch_envelopes(trash_folder).unwrap();
+    let trash_emails = provider.fetch_envelopes(trash_folder).await.unwrap();
     assert_eq!(trash_emails.len(), 1);
     assert_eq!(trash_emails[0].uid, 1);
 }
 
-#[test]
-fn test_8_batch_chunking_with_limit_500() {
+#[tokio::test]
+async fn test_8_batch_chunking_with_limit_500() {
     let mut provider = MockMailProvider::new();
     let trash_folder = "Trash";
 
@@ -126,6 +127,7 @@ fn test_8_batch_chunking_with_limit_500() {
     };
 
     let report = PurgeExecutor::execute(&mut provider, &candidates, trash_folder, &config)
+        .await
         .expect("Bulk purge should succeed");
 
     assert_eq!(report.purged_count, 1250);
@@ -136,8 +138,8 @@ fn test_8_batch_chunking_with_limit_500() {
     assert_eq!(provider.operations_log.len(), 3);
 }
 
-#[test]
-fn test_dry_run_mode_leaves_server_untouched() {
+#[tokio::test]
+async fn test_dry_run_mode_leaves_server_untouched() {
     let mut provider = MockMailProvider::new();
     let trash_folder = "Corbeille";
 
@@ -172,6 +174,7 @@ fn test_dry_run_mode_leaves_server_untouched() {
     };
 
     let report = PurgeExecutor::execute(&mut provider, &candidates, trash_folder, &config)
+        .await
         .expect("Dry run should succeed");
 
     assert!(report.is_dry_run);
@@ -180,10 +183,11 @@ fn test_dry_run_mode_leaves_server_untouched() {
 
     // Provider state must be 100% untouched
     assert_eq!(provider.operations_log.len(), 0);
-    assert_eq!(provider.fetch_envelopes("INBOX").unwrap().len(), 1);
+    assert_eq!(provider.fetch_envelopes("INBOX").await.unwrap().len(), 1);
     assert_eq!(
         provider
             .fetch_envelopes(trash_folder)
+            .await
             .unwrap_or_default()
             .len(),
         0

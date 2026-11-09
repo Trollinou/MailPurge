@@ -10,16 +10,8 @@ feature-depth = 1
 # 1. Advisories (Vulnerability audits)
 [advisories]
 ignore = [
-    # Transitive dependencies through imap 3.0-alpha -> rustls-connector -> rustls 0.22 -> rustls-webpki / pemfile
     { id = "RUSTSEC-2024-0370", reason = "Transitive dependency via gtk/tauri" },
-    { id = "RUSTSEC-2025-0134", reason = "Transitive dependency via rustls-native-certs through imap crate" },
-    { id = "RUSTSEC-2026-0049", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
-    { id = "RUSTSEC-2026-0098", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
-    { id = "RUSTSEC-2026-0099", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
-    { id = "RUSTSEC-2026-0104", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
-    { id = "RUSTSEC-2026-0346", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
-    { id = "RUSTSEC-2026-0349", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
-    { id = "RUSTSEC-2026-0382", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0441", reason = "Transitive dependency via async-imap 0.10, archived macro crate with zero vulnerability" },
     { id = "RUSTSEC-2026-0459", reason = "Transitive dependency via rusqlite 0.32 bundled libsqlite3-sys, safe local app db usage" },
 ]
 

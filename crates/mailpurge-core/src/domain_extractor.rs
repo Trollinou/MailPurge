@@ -125,31 +125,15 @@ pub fn extract_sender_domain(from_header: &str) -> Result<ExtractedSender, Domai
         return Err(DomainExtractError::InvalidHeader);
     }
 
-    // Strategy 1: mailparse::addrparse
-    if let Ok(parsed_addrs) = mailparse::addrparse(cleaned) {
-        for item in parsed_addrs.iter() {
-            match item {
-                mailparse::MailAddr::Single(info) => {
-                    if let Some(res) =
-                        try_build_extracted_sender(cleaned, info.display_name.clone(), &info.addr)
-                    {
+    // Strategy 1: mail-parser MessageParser
+    let fake_msg = format!("From: {cleaned}\r\n\r\n");
+    if let Some(msg) = mail_parser::MessageParser::new().parse_headers(fake_msg.as_bytes()) {
+        if let Some(from) = msg.from() {
+            for addr in from.iter() {
+                if let Some(email) = addr.address() {
+                    let display_name = addr.name().map(ToString::to_string);
+                    if let Some(res) = try_build_extracted_sender(cleaned, display_name, email) {
                         return Ok(res);
-                    }
-                    if let Some(ref disp) = info.display_name {
-                        if let Some(res) = try_build_extracted_sender(cleaned, None, disp) {
-                            return Ok(res);
-                        }
-                    }
-                }
-                mailparse::MailAddr::Group(group) => {
-                    for info in &group.addrs {
-                        if let Some(res) = try_build_extracted_sender(
-                            cleaned,
-                            info.display_name.clone(),
-                            &info.addr,
-                        ) {
-                            return Ok(res);
-                        }
                     }
                 }
             }

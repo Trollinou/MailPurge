@@ -1,6 +1,7 @@
-use std::sync::Mutex;
-
+use async_trait::async_trait;
+use futures::StreamExt;
 use imap_proto::types::{BodyStructure, NameAttribute};
+use tokio::sync::Mutex;
 
 use crate::folder_scanner::{FolderAttribute, FolderInfo};
 use crate::imap_sequence::chunk_sequence_set;
@@ -11,6 +12,14 @@ use crate::provider_port::{MailProviderError, MailProviderPort, RawEmailEnvelope
 pub enum ImapAuthMethod {
     Password(String),
     XOAuth2 { access_token: String },
+}
+
+/// Installs the `ring` crypto provider as the default process-level provider for Rustls.
+///
+/// This avoids runtime panics when multiple providers (`ring` and `aws-lc-rs`)
+/// coexist in the dependency tree.
+pub fn install_crypto_provider() {
+    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
 }
 
 /// Configuration required to connect to an IMAP mailbox.
@@ -28,10 +37,10 @@ pub struct XOAuth2Authenticator {
     pub access_token: String,
 }
 
-impl imap::Authenticator for XOAuth2Authenticator {
+impl async_imap::Authenticator for XOAuth2Authenticator {
     type Response = String;
 
-    fn process(&self, _data: &[u8]) -> Self::Response {
+    fn process(&mut self, _data: &[u8]) -> Self::Response {
         format!(
             "user={}\x01auth=Bearer {}\x01\x01",
             self.username, self.access_token
@@ -131,45 +140,104 @@ pub struct ParsedHeaders {
 pub fn parse_raw_headers(header_bytes: &[u8]) -> ParsedHeaders {
     let mut result = ParsedHeaders::default();
 
-    if let Ok((headers, _)) = mailparse::parse_headers(header_bytes) {
-        for header in headers {
-            let key = header.get_key();
-            let value = header.get_value();
+    if let Some(msg) = mail_parser::MessageParser::new().parse_headers(header_bytes) {
+        if let Some(subject) = msg.subject() {
+            result.subject = subject.to_string();
+        }
 
-            if key.eq_ignore_ascii_case("subject") {
-                result.subject = value;
-            } else if key.eq_ignore_ascii_case("from") {
-                result.from = value;
-            } else if key.eq_ignore_ascii_case("sender") {
-                if result.from.trim().is_empty() {
-                    result.from = value;
+        if let Some(from) = msg.from() {
+            if let Some(first) = from.first() {
+                match (&first.name, &first.address) {
+                    (Some(name), Some(addr)) => {
+                        result.from = format!("{name} <{addr}>");
+                    }
+                    (None, Some(addr)) => {
+                        result.from = addr.to_string();
+                    }
+                    (Some(name), None) => {
+                        result.from = name.to_string();
+                    }
+                    (None, None) => {}
                 }
-            } else if key.eq_ignore_ascii_case("reply-to") {
-                if result.from.trim().is_empty() {
-                    result.from = value;
+            }
+        } else if let Some(sender) = msg.sender().and_then(|s| s.first()) {
+            match (&sender.name, &sender.address) {
+                (Some(name), Some(addr)) => {
+                    result.from = format!("{name} <{addr}>");
                 }
-            } else if key.eq_ignore_ascii_case("message-id") {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
+                (None, Some(addr)) => {
+                    result.from = addr.to_string();
+                }
+                (Some(name), None) => {
+                    result.from = name.to_string();
+                }
+                (None, None) => {}
+            }
+        } else if let Some(reply_to) = msg.reply_to().and_then(|r| r.first()) {
+            match (&reply_to.name, &reply_to.address) {
+                (Some(name), Some(addr)) => {
+                    result.from = format!("{name} <{addr}>");
+                }
+                (None, Some(addr)) => {
+                    result.from = addr.to_string();
+                }
+                (Some(name), None) => {
+                    result.from = name.to_string();
+                }
+                (None, None) => {}
+            }
+        }
+
+        if let Some(msg_id) = msg.message_id() {
+            let trimmed = msg_id.trim();
+            if !trimmed.is_empty() {
+                if trimmed.starts_with('<') && trimmed.ends_with('>') {
                     result.message_id = Some(trimmed.to_string());
+                } else {
+                    result.message_id = Some(format!("<{trimmed}>"));
                 }
-            } else if key.eq_ignore_ascii_case("list-id") {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    result.list_id = Some(trimmed.to_string());
-                }
-            } else if key.eq_ignore_ascii_case("list-unsubscribe") {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    result.has_unsubscribe = true;
-                    result.list_unsubscribe = Some(trimmed.to_string());
-                }
-            } else if key.eq_ignore_ascii_case("list-unsubscribe-post") {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    result.has_unsubscribe = true;
-                    result.list_unsubscribe_post = Some(trimmed.to_string());
-                }
+            }
+        } else if let Some(raw_id) = msg
+            .header_raw("Message-ID")
+            .or_else(|| msg.header_raw("Message-Id"))
+        {
+            let trimmed = raw_id.trim();
+            if !trimmed.is_empty() {
+                result.message_id = Some(trimmed.to_string());
+            }
+        }
+
+        let list_id = msg
+            .header_raw("List-ID")
+            .or_else(|| msg.header_raw("List-Id"))
+            .or_else(|| msg.list_id().as_text());
+        if let Some(lid) = list_id {
+            let trimmed = lid.trim();
+            if !trimmed.is_empty() {
+                result.list_id = Some(trimmed.to_string());
+            }
+        }
+
+        let unsub = msg
+            .header_raw("List-Unsubscribe")
+            .or_else(|| msg.header_raw("list-unsubscribe"))
+            .or_else(|| msg.list_unsubscribe().as_text());
+        if let Some(u) = unsub {
+            let trimmed = u.trim();
+            if !trimmed.is_empty() {
+                result.has_unsubscribe = true;
+                result.list_unsubscribe = Some(trimmed.to_string());
+            }
+        }
+
+        let unsub_post = msg
+            .header_raw("List-Unsubscribe-Post")
+            .or_else(|| msg.header_raw("list-unsubscribe-post"));
+        if let Some(up) = unsub_post {
+            let trimmed = up.trim();
+            if !trimmed.is_empty() {
+                result.has_unsubscribe = true;
+                result.list_unsubscribe_post = Some(trimmed.to_string());
             }
         }
     }
@@ -179,13 +247,12 @@ pub fn parse_raw_headers(header_bytes: &[u8]) -> ParsedHeaders {
 
 /// Converts an IMAP `Fetch` response item into a `RawEmailEnvelope`.
 #[must_use]
-pub fn parse_fetch_to_envelope(fetch: &imap::types::Fetch) -> Option<RawEmailEnvelope> {
+pub fn parse_fetch_to_envelope(fetch: &async_imap::types::Fetch) -> Option<RawEmailEnvelope> {
     let uid = fetch.uid?;
     let size_bytes = u64::from(fetch.size.unwrap_or(0));
     let is_flagged = fetch
         .flags()
-        .iter()
-        .any(|f| matches!(f, imap::types::Flag::Flagged));
+        .any(|f| matches!(f, async_imap::types::Flag::Flagged));
     let date_timestamp = fetch.internal_date().map_or(0, |dt| dt.timestamp());
 
     let parsed_headers = match fetch.header() {
@@ -214,22 +281,21 @@ pub fn parse_fetch_to_envelope(fetch: &imap::types::Fetch) -> Option<RawEmailEnv
     })
 }
 
-fn map_imap_error(err: imap::Error) -> MailProviderError {
+fn map_async_imap_error(err: async_imap::error::Error) -> MailProviderError {
     match err {
-        imap::Error::Io(e) => MailProviderError::ConnectionError(e.to_string()),
-        imap::Error::RustlsHandshake(e) => MailProviderError::ConnectionError(e.to_string()),
-        imap::Error::Bad(e) => MailProviderError::ProtocolError(e.to_string()),
-        imap::Error::No(e) => MailProviderError::OperationFailed(e.to_string()),
-        imap::Error::ConnectionLost => {
+        async_imap::error::Error::Io(e) => MailProviderError::ConnectionError(e.to_string()),
+        async_imap::error::Error::Bad(e) => MailProviderError::ProtocolError(e),
+        async_imap::error::Error::No(e) => MailProviderError::OperationFailed(e),
+        async_imap::error::Error::ConnectionLost => {
             MailProviderError::ConnectionError("Connexion IMAP interrompue".to_string())
         }
-        imap::Error::Parse(e) => {
+        async_imap::error::Error::Parse(e) => {
             MailProviderError::ProtocolError(format!("Erreur de parsing: {e}"))
         }
-        imap::Error::Validate(e) => {
+        async_imap::error::Error::Validate(e) => {
             MailProviderError::ProtocolError(format!("Validation invalide: {e}"))
         }
-        imap::Error::Append => {
+        async_imap::error::Error::Append => {
             MailProviderError::OperationFailed("Échec de la commande APPEND".to_string())
         }
         other => MailProviderError::OperationFailed(other.to_string()),
@@ -259,7 +325,7 @@ fn strip_html_tags(html: &str) -> String {
         if chars[i] == '<' {
             let rem_lower: String = lower_chars[i..].iter().take(10).collect();
 
-            // HTML comments <!-- ... -->
+            // Skip comments <!-- ... -->
             if rem_lower.starts_with("<!--") {
                 i += 4;
                 while i + 2 < len {
@@ -341,7 +407,7 @@ fn strip_html_tags(html: &str) -> String {
                                     out.push(ch);
                                 }
                             }
-                        } else if entity.to_lowercase().starts_with("&#x") {
+                        } else if entity.starts_with("&#x") || entity.starts_with("&#X") {
                             let hex_str = &entity[3..entity.len() - 1];
                             if let Ok(code) = u32::from_str_radix(hex_str, 16) {
                                 if let Some(ch) = char::from_u32(code) {
@@ -388,59 +454,28 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn collect_leaf_parts<'a>(
-    part: &'a mailparse::ParsedMail<'a>,
-    acc: &mut Vec<&'a mailparse::ParsedMail<'a>>,
-) {
-    if part.subparts.is_empty() {
-        acc.push(part);
-    } else {
-        for subpart in &part.subparts {
-            collect_leaf_parts(subpart, acc);
-        }
-    }
-}
-
 /// Extracts a clean, human-readable body snippet from raw email bytes (handling MIME multipart, Base64/Quoted-Printable, and HTML).
 #[must_use]
 pub fn extract_body_preview(raw_bytes: &[u8]) -> String {
-    if let Ok(mail) = mailparse::parse_mail(raw_bytes) {
-        let mut leaf_parts = Vec::new();
-        collect_leaf_parts(&mail, &mut leaf_parts);
-
-        // 1. Prefer text/plain across all leaf parts
-        for part in &leaf_parts {
-            if part.ctype.mimetype.eq_ignore_ascii_case("text/plain") {
-                if let Ok(body) = part.get_body() {
-                    let trimmed = body.trim();
-                    if !trimmed.is_empty() {
-                        return truncate_preview(trimmed, 1500);
-                    }
+    if let Some(msg) = mail_parser::MessageParser::new().parse(raw_bytes) {
+        // 1. Prefer explicit text/plain part if present
+        for part in &msg.parts {
+            if let mail_parser::PartType::Text(text) = &part.body {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return truncate_preview(trimmed, 1500);
                 }
             }
         }
 
-        // 2. Try text/html across all leaf parts with clean tag & CSS stripping
-        for part in &leaf_parts {
-            if part.ctype.mimetype.eq_ignore_ascii_case("text/html") {
-                if let Ok(body) = part.get_body() {
-                    let stripped = strip_html_tags(&body);
-                    let trimmed = stripped.trim();
-                    if !trimmed.is_empty() {
-                        return truncate_preview(trimmed, 1500);
-                    }
+        // 2. Try explicit text/html part with clean tag & CSS & script stripping
+        for part in &msg.parts {
+            if let mail_parser::PartType::Html(html) = &part.body {
+                let stripped = strip_html_tags(html);
+                let trimmed = stripped.trim();
+                if !trimmed.is_empty() {
+                    return truncate_preview(trimmed, 1500);
                 }
-            }
-        }
-
-        // 3. Fallback on top-level body
-        if let Ok(body) = mail.get_body() {
-            let trimmed = body.trim();
-            if !trimmed.is_empty() {
-                if mail.ctype.mimetype.to_lowercase().contains("html") {
-                    return truncate_preview(&strip_html_tags(trimmed), 1500);
-                }
-                return truncate_preview(trimmed, 1500);
             }
         }
     }
@@ -449,10 +484,13 @@ pub fn extract_body_preview(raw_bytes: &[u8]) -> String {
     truncate_preview(&strip_html_tags(s.trim()), 1500)
 }
 
-/// Production IMAP mail provider adapter communicating over TLS port 993.
+pub type ImapSessionStream = tokio_rustls::client::TlsStream<tokio::net::TcpStream>;
+pub type ImapSession = async_imap::Session<ImapSessionStream>;
+
+/// Production IMAP mail provider adapter communicating over TLS port 993 asynchronously.
 pub struct ImapProvider {
     config: ImapConfig,
-    session: Mutex<Option<imap::Session<imap::Connection>>>,
+    session: Mutex<Option<ImapSession>>,
 }
 
 impl ImapProvider {
@@ -466,110 +504,117 @@ impl ImapProvider {
     }
 
     /// Connects a new IMAP session over TLS with a 12-second timeout.
-    pub fn connect_session(&self) -> Result<imap::Session<imap::Connection>, MailProviderError> {
+    pub async fn connect_session(&self) -> Result<ImapSession, MailProviderError> {
         let server = self.config.server.clone();
         let port = self.config.port;
         let auth = self.config.auth.clone();
         let username = self.config.username.clone();
 
-        eprintln!("[IMAP] Tentative de connexion TLS vers {server}:{port} (login: {username})...");
+        eprintln!("[IMAP] Tentative de connexion TLS asynchrone vers {server}:{port} (login: {username})...");
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let connect_fut = async {
+            let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
+            let native = rustls_native_certs::load_native_certs();
+            for cert in native.certs {
+                let _ = root_store.add(cert);
+            }
+            if root_store.is_empty() {
+                root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            }
 
-        std::thread::spawn(move || {
-            let res = (|| -> Result<imap::Session<imap::Connection>, MailProviderError> {
-                let client = imap::ClientBuilder::new(&server, port)
-                    .connect()
-                    .map_err(map_imap_error)?;
+            let tls_config = tokio_rustls::rustls::ClientConfig::builder_with_provider(
+                std::sync::Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()),
+            )
+            .with_safe_default_protocol_versions()
+            .map_err(|e| MailProviderError::ConnectionError(format!("Erreur versions TLS: {e}")))?
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+            let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls_config));
 
-                match &auth {
-                    ImapAuthMethod::Password(password) => client
-                        .login(&username, password)
-                        .map_err(|(err, _)| map_imap_error(err)),
-                    ImapAuthMethod::XOAuth2 { access_token } => {
-                        let authenticator = XOAuth2Authenticator {
-                            username,
-                            access_token: access_token.clone(),
-                        };
-                        client
-                            .authenticate("XOAUTH2", &authenticator)
-                            .map_err(|(err, _)| map_imap_error(err))
-                    }
+            let server_name = rustls_pki_types::ServerName::try_from(server.as_str())
+                .map_err(|e| {
+                    MailProviderError::ConnectionError(format!("Nom de serveur TLS invalide: {e}"))
+                })?
+                .to_owned();
+
+            let tcp = tokio::net::TcpStream::connect((server.as_str(), port))
+                .await
+                .map_err(|e| {
+                    MailProviderError::ConnectionError(format!("Échec connexion TCP: {e}"))
+                })?;
+
+            let tls_stream = connector.connect(server_name, tcp).await.map_err(|e| {
+                MailProviderError::ConnectionError(format!("Échec négociation TLS: {e}"))
+            })?;
+
+            let mut client = async_imap::Client::new(tls_stream);
+            let _greeting = client.read_response().await;
+
+            let session = match &auth {
+                ImapAuthMethod::Password(password) => client
+                    .login(&username, password)
+                    .await
+                    .map_err(|(err, _)| map_async_imap_error(err))?,
+                ImapAuthMethod::XOAuth2 { access_token } => {
+                    let authenticator = XOAuth2Authenticator {
+                        username,
+                        access_token: access_token.clone(),
+                    };
+                    client
+                        .authenticate("XOAUTH2", authenticator)
+                        .await
+                        .map_err(|(err, _)| map_async_imap_error(err))?
                 }
-            })();
-            let _ = tx.send(res);
-        });
+            };
 
-        match rx.recv_timeout(std::time::Duration::from_secs(12)) {
-            Ok(Ok(session)) => {
-                eprintln!(
-                    "[IMAP] Connexion et authentification réussies vers {}:{}",
-                    self.config.server, self.config.port
-                );
-                Ok(session)
-            }
-            Ok(Err(e)) => {
-                eprintln!(
-                    "[IMAP] Échec de connexion/authentification vers {}:{} - {e}",
-                    self.config.server, self.config.port
-                );
-                Err(e)
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let msg = format!(
-                    "Délai d'attente dépassé (timeout 12s) vers {}:{} — Le serveur ne répond pas (port bloqué ou restriction réseau fournisseur)",
-                    self.config.server, self.config.port
-                );
-                eprintln!("[IMAP] {msg}");
-                Err(MailProviderError::ConnectionError(msg))
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err(MailProviderError::ConnectionError(
-                    "Le thread de connexion IMAP s'est arrêté inopinément".to_string(),
-                ))
-            }
-        }
-    }
-
-    fn execute_with_session<R>(
-        &self,
-        action: impl FnOnce(&mut imap::Session<imap::Connection>) -> Result<R, MailProviderError>,
-    ) -> Result<R, MailProviderError> {
-        let mut session_guard = self.session.lock().map_err(|_| {
-            MailProviderError::OperationFailed("Verrouillage de session échoué".to_string())
-        })?;
-
-        if session_guard.is_none() {
-            *session_guard = Some(self.connect_session()?);
-        }
-
-        let session = match session_guard.as_mut() {
-            Some(s) => s,
-            None => {
-                return Err(MailProviderError::ConnectionError(
-                    "Session IMAP non initialisée".to_string(),
-                ))
-            }
+            eprintln!("[IMAP] Connexion et authentification réussies vers {server}:{port}");
+            Ok(session)
         };
 
-        match action(session) {
-            Ok(val) => Ok(val),
-            Err(e) => {
-                // Invalidate session on error so reconnection can happen
-                *session_guard = None;
-                Err(e)
-            }
+        tokio::time::timeout(std::time::Duration::from_secs(12), connect_fut)
+            .await
+            .map_err(|_| {
+                let msg = format!(
+                    "Délai d'attente dépassé (timeout 12s) vers {server}:{port} — Le serveur ne répond pas (port bloqué ou restriction réseau fournisseur)"
+                );
+                eprintln!("[IMAP] {msg}");
+                MailProviderError::ConnectionError(msg)
+            })?
+    }
+
+    async fn get_session(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<ImapSession>>, MailProviderError> {
+        let mut guard = self.session.lock().await;
+        if guard.is_none() {
+            *guard = Some(self.connect_session().await?);
         }
+        Ok(guard)
+    }
+
+    async fn invalidate_session(&self) {
+        let mut guard = self.session.lock().await;
+        *guard = None;
     }
 }
 
+#[async_trait]
 impl MailProviderPort for ImapProvider {
-    fn list_folders(&self) -> Result<Vec<FolderInfo>, MailProviderError> {
-        self.execute_with_session(|session| {
-            let names = session.list(Some(""), Some("*")).map_err(map_imap_error)?;
+    async fn list_folders(&self) -> Result<Vec<FolderInfo>, MailProviderError> {
+        let res = async {
+            let mut guard = self.get_session().await?;
+            let session = guard.as_mut().ok_or_else(|| {
+                MailProviderError::ConnectionError("Session non initialisée".to_string())
+            })?;
+            let stream = session
+                .list(Some(""), Some("*"))
+                .await
+                .map_err(map_async_imap_error)?;
+            tokio::pin!(stream);
 
             let mut folders = Vec::new();
-            for name in names.iter() {
+            while let Some(res) = stream.next().await {
+                let name = res.map_err(map_async_imap_error)?;
                 let path = name.name().to_string();
                 if path.is_empty() {
                     continue;
@@ -584,45 +629,81 @@ impl MailProviderPort for ImapProvider {
                 });
             }
             Ok(folders)
-        })
+        }
+        .await;
+
+        if res.is_err() {
+            self.invalidate_session().await;
+        }
+        res
     }
 
-    fn get_folder_message_count(&self, folder_path: &str) -> Result<u32, MailProviderError> {
-        self.execute_with_session(|session| {
-            let mailbox = session.select(folder_path).map_err(map_imap_error)?;
+    async fn get_folder_message_count(&self, folder_path: &str) -> Result<u32, MailProviderError> {
+        let res = async {
+            let mut guard = self.get_session().await?;
+            let session = guard.as_mut().ok_or_else(|| {
+                MailProviderError::ConnectionError("Session non initialisée".to_string())
+            })?;
+            let mailbox = session
+                .select(folder_path)
+                .await
+                .map_err(map_async_imap_error)?;
             Ok(mailbox.exists)
-        })
+        }
+        .await;
+
+        if let Err(MailProviderError::ConnectionError(_)) = &res {
+            self.invalidate_session().await;
+        }
+        res
     }
 
-    fn fetch_envelopes(
+    async fn fetch_envelopes(
         &self,
         folder_path: &str,
     ) -> Result<Vec<RawEmailEnvelope>, MailProviderError> {
-        self.execute_with_session(|session| {
-            let mailbox = session.select(folder_path).map_err(map_imap_error)?;
+        let res = async {
+            let mut guard = self.get_session().await?;
+            let session = guard.as_mut().ok_or_else(|| {
+                MailProviderError::ConnectionError("Session non initialisée".to_string())
+            })?;
+
+            let mailbox = session
+                .select(folder_path)
+                .await
+                .map_err(map_async_imap_error)?;
             if mailbox.exists == 0 {
                 return Ok(Vec::new());
             }
 
-            let fetches = session
+            let stream = session
                 .uid_fetch(
                     "1:*",
                     "(UID RFC822.SIZE FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Subject From Sender Reply-To Date Message-ID List-ID List-Unsubscribe List-Unsubscribe-Post)])",
                 )
-                .map_err(map_imap_error)?;
+                .await
+                .map_err(map_async_imap_error)?;
+            tokio::pin!(stream);
 
-            let mut envelopes = Vec::with_capacity(fetches.len());
-            for fetch in fetches.iter() {
-                if let Some(env) = parse_fetch_to_envelope(fetch) {
+            let mut envelopes = Vec::new();
+            while let Some(fetch_res) = stream.next().await {
+                let fetch = fetch_res.map_err(map_async_imap_error)?;
+                if let Some(env) = parse_fetch_to_envelope(&fetch) {
                     envelopes.push(env);
                 }
             }
 
             Ok(envelopes)
-        })
+        }
+        .await;
+
+        if let Err(MailProviderError::ConnectionError(_)) = &res {
+            self.invalidate_session().await;
+        }
+        res
     }
 
-    fn fetch_envelopes_range(
+    async fn fetch_envelopes_range(
         &self,
         folder_path: &str,
         start_seq: u32,
@@ -632,8 +713,16 @@ impl MailProviderPort for ImapProvider {
             return Ok(Vec::new());
         }
 
-        self.execute_with_session(|session| {
-            let mailbox = session.select(folder_path).map_err(map_imap_error)?;
+        let res = async {
+            let mut guard = self.get_session().await?;
+            let session = guard.as_mut().ok_or_else(|| {
+                MailProviderError::ConnectionError("Session non initialisée".to_string())
+            })?;
+
+            let mailbox = session
+                .select(folder_path)
+                .await
+                .map_err(map_async_imap_error)?;
             if mailbox.exists == 0 || start_seq > mailbox.exists {
                 return Ok(Vec::new());
             }
@@ -641,25 +730,34 @@ impl MailProviderPort for ImapProvider {
             let bounded_end = end_seq.min(mailbox.exists);
             let seq_range = format!("{start_seq}:{bounded_end}");
 
-            let fetches = session
+            let stream = session
                 .fetch(
                     &seq_range,
                     "(UID RFC822.SIZE FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Subject From Sender Reply-To Date Message-ID List-ID List-Unsubscribe List-Unsubscribe-Post)])",
                 )
-                .map_err(map_imap_error)?;
+                .await
+                .map_err(map_async_imap_error)?;
+            tokio::pin!(stream);
 
-            let mut envelopes = Vec::with_capacity(fetches.len());
-            for fetch in fetches.iter() {
-                if let Some(env) = parse_fetch_to_envelope(fetch) {
+            let mut envelopes = Vec::new();
+            while let Some(fetch_res) = stream.next().await {
+                let fetch = fetch_res.map_err(map_async_imap_error)?;
+                if let Some(env) = parse_fetch_to_envelope(&fetch) {
                     envelopes.push(env);
                 }
             }
 
             Ok(envelopes)
-        })
+        }
+        .await;
+
+        if let Err(MailProviderError::ConnectionError(_)) = &res {
+            self.invalidate_session().await;
+        }
+        res
     }
 
-    fn move_to_trash(
+    async fn move_to_trash(
         &mut self,
         folder_path: &str,
         uids: &[u32],
@@ -669,17 +767,25 @@ impl MailProviderPort for ImapProvider {
             return Ok(0);
         }
 
-        self.execute_with_session(|session| {
-            session.select(folder_path).map_err(map_imap_error)?;
+        let quoted_trash_for_copy = quote_mailbox_name(trash_folder_path);
 
-            let (has_move, has_uidplus) = match session.capabilities() {
+        let res = async {
+            let mut guard = self.get_session().await?;
+            let session = guard.as_mut().ok_or_else(|| {
+                MailProviderError::ConnectionError("Session non initialisée".to_string())
+            })?;
+
+            session
+                .select(folder_path)
+                .await
+                .map_err(map_async_imap_error)?;
+
+            let (has_move, has_uidplus) = match session.capabilities().await {
                 Ok(caps) => (caps.has_str("MOVE"), caps.has_str("UIDPLUS")),
                 Err(_) => (false, false),
             };
 
-            let quoted_trash = quote_mailbox_name(trash_folder_path);
             let mut moved_count = 0;
-
             for chunk_uids in uids.chunks(500) {
                 let seq = chunk_sequence_set(chunk_uids, 500)
                     .into_iter()
@@ -691,23 +797,31 @@ impl MailProviderPort for ImapProvider {
                 }
 
                 let mut moved = false;
-                if has_move && session.uid_mv(&seq, trash_folder_path).is_ok() {
+                if has_move && session.uid_mv(&seq, trash_folder_path).await.is_ok() {
                     moved = true;
                 }
 
                 if !moved {
-                    // Fallback RFC 3501: UID COPY + UID STORE +FLAGS (\Deleted) + EXPUNGE
                     session
-                        .uid_copy(&seq, &quoted_trash)
-                        .map_err(map_imap_error)?;
-                    session
-                        .uid_store(&seq, "+FLAGS (\\Deleted)")
-                        .map_err(map_imap_error)?;
+                        .uid_copy(&seq, &quoted_trash_for_copy)
+                        .await
+                        .map_err(map_async_imap_error)?;
+
+                    {
+                        let store_stream = session
+                            .uid_store(&seq, r"+FLAGS (\Deleted)")
+                            .await
+                            .map_err(map_async_imap_error)?;
+                        tokio::pin!(store_stream);
+                        while let Some(res) = store_stream.next().await {
+                            let _ = res.map_err(map_async_imap_error)?;
+                        }
+                    }
 
                     if has_uidplus {
-                        let _ = session.uid_expunge(&seq).or_else(|_| session.expunge());
+                        let _ = session.uid_expunge(&seq).await;
                     } else {
-                        let _ = session.expunge();
+                        let _ = session.expunge().await;
                     }
                 }
 
@@ -715,59 +829,117 @@ impl MailProviderPort for ImapProvider {
             }
 
             Ok(moved_count)
-        })
+        }
+        .await;
+
+        if let Err(MailProviderError::ConnectionError(_)) = &res {
+            self.invalidate_session().await;
+        }
+        res
     }
 
-    fn empty_trash(&mut self, trash_folder_path: &str) -> Result<usize, MailProviderError> {
-        self.execute_with_session(|session| {
-            let mailbox = session.select(trash_folder_path).map_err(map_imap_error)?;
+    async fn empty_trash(&mut self, trash_folder_path: &str) -> Result<usize, MailProviderError> {
+        let res = async {
+            let mut guard = self.get_session().await?;
+            let session = guard.as_mut().ok_or_else(|| {
+                MailProviderError::ConnectionError("Session non initialisée".to_string())
+            })?;
 
+            let mailbox = session
+                .select(trash_folder_path)
+                .await
+                .map_err(map_async_imap_error)?;
             if mailbox.exists == 0 {
                 return Ok(0);
             }
 
-            session
-                .store("1:*", "+FLAGS (\\Deleted)")
-                .map_err(map_imap_error)?;
-            session.expunge().map_err(map_imap_error)?;
+            {
+                let store_stream = session
+                    .store("1:*", r"+FLAGS (\Deleted)")
+                    .await
+                    .map_err(map_async_imap_error)?;
+                tokio::pin!(store_stream);
+                while let Some(res) = store_stream.next().await {
+                    let _ = res.map_err(map_async_imap_error)?;
+                }
+            }
 
-            Ok(mailbox.exists as usize)
-        })
+            let expunge_stream = session.expunge().await.map_err(map_async_imap_error)?;
+            tokio::pin!(expunge_stream);
+
+            let mut deleted = 0;
+            while let Some(res) = expunge_stream.next().await {
+                let _ = res.map_err(map_async_imap_error)?;
+                deleted += 1;
+            }
+
+            Ok(deleted.max(mailbox.exists as usize))
+        }
+        .await;
+
+        if let Err(MailProviderError::ConnectionError(_)) = &res {
+            self.invalidate_session().await;
+        }
+        res
     }
 
-    fn fetch_body_snippet(
+    async fn fetch_body_snippet(
         &mut self,
         folder_path: &str,
         uid: u32,
     ) -> Result<String, MailProviderError> {
-        self.execute_with_session(|session| {
-            session.select(folder_path).map_err(map_imap_error)?;
+        let uid_str = uid.to_string();
+
+        let res = async {
+            let mut guard = self.get_session().await?;
+            let session = guard.as_mut().ok_or_else(|| {
+                MailProviderError::ConnectionError("Session non initialisée".to_string())
+            })?;
+
+            session
+                .select(folder_path)
+                .await
+                .map_err(map_async_imap_error)?;
 
             // 1. Fetch email up to 64KB via BODY.PEEK[] without marking as read
-            if let Ok(fetches) = session.uid_fetch(uid.to_string(), "(BODY.PEEK[]<0.65536>)") {
-                if let Some(fetch) = fetches.iter().next() {
-                    if let Some(bytes) = fetch.body() {
-                        let preview = extract_body_preview(bytes);
-                        if !preview.trim().is_empty() {
-                            return Ok(preview);
+            if let Ok(stream) = session.uid_fetch(&uid_str, "(BODY.PEEK[]<0.65536>)").await {
+                tokio::pin!(stream);
+                if let Some(res) = stream.next().await {
+                    if let Ok(fetch) = res {
+                        if let Some(bytes) = fetch.body().or_else(|| fetch.text()) {
+                            let preview = extract_body_preview(bytes);
+                            if !preview.trim().is_empty() {
+                                return Ok(preview);
+                            }
                         }
                     }
                 }
             }
 
             // 2. Fallback to full BODY.PEEK[]
-            if let Ok(fetches_full) = session.uid_fetch(uid.to_string(), "(BODY.PEEK[])") {
-                if let Some(fetch) = fetches_full.iter().next() {
-                    if let Some(bytes) = fetch.body() {
-                        let preview = extract_body_preview(bytes);
-                        if !preview.trim().is_empty() {
-                            return Ok(preview);
-                        }
+            let stream = session
+                .uid_fetch(&uid_str, "(BODY.PEEK[])")
+                .await
+                .map_err(map_async_imap_error)?;
+            tokio::pin!(stream);
+
+            while let Some(res) = stream.next().await {
+                let fetch = res.map_err(map_async_imap_error)?;
+                if let Some(bytes) = fetch.body().or_else(|| fetch.text()) {
+                    let preview = extract_body_preview(bytes);
+                    if !preview.trim().is_empty() {
+                        return Ok(preview);
                     }
                 }
             }
 
             Ok(String::new())
-        })
+        }
+        .await;
+
+        if res.is_err() {
+            self.invalidate_session().await;
+        }
+        res
     }
 }

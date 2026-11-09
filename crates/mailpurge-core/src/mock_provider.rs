@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
+
 use crate::folder_scanner::FolderInfo;
 use crate::provider_port::{MailProviderError, MailProviderPort, RawEmailEnvelope};
 
@@ -29,12 +31,13 @@ impl MockMailProvider {
     }
 }
 
+#[async_trait]
 impl MailProviderPort for MockMailProvider {
-    fn list_folders(&self) -> Result<Vec<FolderInfo>, MailProviderError> {
+    async fn list_folders(&self) -> Result<Vec<FolderInfo>, MailProviderError> {
         Ok(self.folders.clone())
     }
 
-    fn get_folder_message_count(&self, folder_path: &str) -> Result<u32, MailProviderError> {
+    async fn get_folder_message_count(&self, folder_path: &str) -> Result<u32, MailProviderError> {
         match self.emails_by_folder.get(folder_path) {
             Some(emails) => Ok(emails.len() as u32),
             None => {
@@ -47,7 +50,7 @@ impl MailProviderPort for MockMailProvider {
         }
     }
 
-    fn fetch_envelopes(
+    async fn fetch_envelopes(
         &self,
         folder_path: &str,
     ) -> Result<Vec<RawEmailEnvelope>, MailProviderError> {
@@ -64,7 +67,7 @@ impl MailProviderPort for MockMailProvider {
         }
     }
 
-    fn fetch_envelopes_range(
+    async fn fetch_envelopes_range(
         &self,
         folder_path: &str,
         start_seq: u32,
@@ -93,7 +96,7 @@ impl MailProviderPort for MockMailProvider {
         Ok(emails[start_idx..end_idx].to_vec())
     }
 
-    fn move_to_trash(
+    async fn move_to_trash(
         &mut self,
         folder_path: &str,
         uids: &[u32],
@@ -128,7 +131,7 @@ impl MailProviderPort for MockMailProvider {
         Ok(moved_count)
     }
 
-    fn empty_trash(&mut self, trash_folder_path: &str) -> Result<usize, MailProviderError> {
+    async fn empty_trash(&mut self, trash_folder_path: &str) -> Result<usize, MailProviderError> {
         let trash_emails = self
             .emails_by_folder
             .get_mut(trash_folder_path)

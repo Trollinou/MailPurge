@@ -18,7 +18,7 @@ pub struct ScanProgressEvent {
 }
 
 /// Executes mailbox folder synchronization, classification, and SQLite upsertion.
-pub fn execute_sync(
+pub async fn execute_sync(
     app: &AppHandle,
     storage: &MailStorageRepository,
     account_id: i64,
@@ -39,6 +39,7 @@ pub fn execute_sync(
 
     let folders = provider
         .list_folders()
+        .await
         .map_err(|e| format!("Erreur liste des dossiers: {e}"))?;
 
     let scannable_folders: Vec<_> = folders.into_iter().filter(|f| f.is_scannable()).collect();
@@ -50,7 +51,16 @@ pub fn execute_sync(
     let mut grand_total = 0usize;
 
     for folder in scannable_folders {
-        let count = provider.get_folder_message_count(&folder.path).unwrap_or(0);
+        let count = match provider.get_folder_message_count(&folder.path).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "[SyncEngine] Avertissement: échec lecture dossier '{}': {e}",
+                    folder.path
+                );
+                0
+            }
+        };
         grand_total += count as usize;
         folders_with_counts.push((folder, count));
     }
@@ -91,7 +101,10 @@ pub fn execute_sync(
 
         while seq <= folder_count {
             let end_seq = (seq + batch_size - 1).min(folder_count);
-            let envelopes = match provider.fetch_envelopes_range(&folder.path, seq, end_seq) {
+            let envelopes = match provider
+                .fetch_envelopes_range(&folder.path, seq, end_seq)
+                .await
+            {
                 Ok(envs) => envs,
                 Err(e) => {
                     eprintln!(

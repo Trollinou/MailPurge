@@ -14,9 +14,9 @@ use std::borrow::Cow;
 
 #[test]
 fn test_xoauth2_authenticator_format() {
-    use imap::Authenticator;
+    use async_imap::Authenticator;
 
-    let auth = XOAuth2Authenticator {
+    let mut auth = XOAuth2Authenticator {
         username: "test@domain.com".to_string(),
         access_token: "ya29.secret_token".to_string(),
     };

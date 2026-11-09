@@ -89,8 +89,8 @@ fn test_6_identify_trash_folder_rfc6154_and_heuristics() {
     assert_eq!(trash.path, "Trash");
 }
 
-#[test]
-fn test_mock_provider_lifecycle() {
+#[tokio::test]
+async fn test_mock_provider_lifecycle() {
     let mut provider = MockMailProvider::new();
 
     // Setup folders
@@ -134,30 +134,39 @@ fn test_mock_provider_lifecycle() {
     );
 
     // List folders
-    let folders = provider.list_folders().unwrap();
+    let folders = provider.list_folders().await.unwrap();
     assert_eq!(folders.len(), 2);
 
     // Fetch emails
-    let emails = provider.fetch_envelopes("INBOX").unwrap();
+    let emails = provider.fetch_envelopes("INBOX").await.unwrap();
     assert_eq!(emails.len(), 2);
 
     // Move UID 10 to trash
-    let moved_count = provider.move_to_trash("INBOX", &[10], "Corbeille").unwrap();
+    let moved_count = provider
+        .move_to_trash("INBOX", &[10], "Corbeille")
+        .await
+        .unwrap();
     assert_eq!(moved_count, 1);
 
     // INBOX should now have only 1 email
-    assert_eq!(provider.fetch_envelopes("INBOX").unwrap().len(), 1);
+    assert_eq!(provider.fetch_envelopes("INBOX").await.unwrap().len(), 1);
     // Corbeille should have 1 email
-    assert_eq!(provider.fetch_envelopes("Corbeille").unwrap().len(), 1);
+    assert_eq!(
+        provider.fetch_envelopes("Corbeille").await.unwrap().len(),
+        1
+    );
 
     // Empty trash
-    let purged_count = provider.empty_trash("Corbeille").unwrap();
+    let purged_count = provider.empty_trash("Corbeille").await.unwrap();
     assert_eq!(purged_count, 1);
-    assert_eq!(provider.fetch_envelopes("Corbeille").unwrap().len(), 0);
+    assert_eq!(
+        provider.fetch_envelopes("Corbeille").await.unwrap().len(),
+        0
+    );
 }
 
-#[test]
-fn test_folder_count_and_range_fetching() {
+#[tokio::test]
+async fn test_folder_count_and_range_fetching() {
     let mut provider = MockMailProvider::new();
     provider.add_folder(FolderInfo::new("INBOX", vec![FolderAttribute::Inbox]));
 
@@ -182,22 +191,28 @@ fn test_folder_count_and_range_fetching() {
     }
 
     // Check count
-    let count = provider.get_folder_message_count("INBOX").unwrap();
+    let count = provider.get_folder_message_count("INBOX").await.unwrap();
     assert_eq!(count, 10);
 
     // Range 1..=3
-    let chunk1 = provider.fetch_envelopes_range("INBOX", 1, 3).unwrap();
+    let chunk1 = provider.fetch_envelopes_range("INBOX", 1, 3).await.unwrap();
     assert_eq!(chunk1.len(), 3);
     assert_eq!(chunk1[0].uid, 1);
     assert_eq!(chunk1[2].uid, 3);
 
     // Range 8..=12 (should clamp to 10)
-    let chunk2 = provider.fetch_envelopes_range("INBOX", 8, 12).unwrap();
+    let chunk2 = provider
+        .fetch_envelopes_range("INBOX", 8, 12)
+        .await
+        .unwrap();
     assert_eq!(chunk2.len(), 3);
     assert_eq!(chunk2[0].uid, 8);
     assert_eq!(chunk2[2].uid, 10);
 
     // Out of bounds
-    let empty_chunk = provider.fetch_envelopes_range("INBOX", 20, 30).unwrap();
+    let empty_chunk = provider
+        .fetch_envelopes_range("INBOX", 20, 30)
+        .await
+        .unwrap();
     assert!(empty_chunk.is_empty());
 }
