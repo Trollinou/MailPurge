@@ -1,0 +1,64 @@
+# cargo-deny configuration
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# 1. Advisories (Vulnerability audits)
+[advisories]
+ignore = [
+    # Transitive dependencies through imap 3.0-alpha -> rustls-connector -> rustls 0.22 -> rustls-webpki / pemfile
+    { id = "RUSTSEC-2024-0370", reason = "Transitive dependency via gtk/tauri" },
+    { id = "RUSTSEC-2025-0134", reason = "Transitive dependency via rustls-native-certs through imap crate" },
+    { id = "RUSTSEC-2026-0049", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0098", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0099", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0104", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0346", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0349", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0382", reason = "Transitive dependency via imap crate with fixed lock on rustls 0.22" },
+    { id = "RUSTSEC-2026-0459", reason = "Transitive dependency via rusqlite 0.32 bundled libsqlite3-sys, safe local app db usage" },
+]
+
+# 2. Licenses (Permissive allowed, any license not in `allow` is denied)
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "Unlicense",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 }
+]
+
+# 3. Bans (Duplicate crates, banned dependencies)
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+deny = []
+
+# 4. Sources (Registry integrity)
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

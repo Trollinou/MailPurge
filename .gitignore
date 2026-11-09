@@ -3,4 +3,5 @@ node_modules/
 dist/
 *.db
 *.db-journal
+mutants.out/
 .DS_Store

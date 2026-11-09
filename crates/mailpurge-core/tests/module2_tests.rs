@@ -1,3 +1,5 @@
+#![allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
+
 use mailpurge_core::folder_scanner::{
     filter_scannable_folders, find_trash_folder, FolderAttribute, FolderInfo,
 };
@@ -93,10 +95,7 @@ fn test_mock_provider_lifecycle() {
 
     // Setup folders
     provider.add_folder(FolderInfo::new("INBOX", vec![FolderAttribute::Inbox]));
-    provider.add_folder(FolderInfo::new(
-        "Corbeille",
-        vec![FolderAttribute::Trash],
-    ));
+    provider.add_folder(FolderInfo::new("Corbeille", vec![FolderAttribute::Trash]));
 
     // Setup emails in INBOX
     provider.add_email(
@@ -111,6 +110,9 @@ fn test_mock_provider_lifecycle() {
             is_flagged: false,
             has_unsubscribe: true,
             attachment_names: vec![],
+            list_id: None,
+            list_unsubscribe: None,
+            list_unsubscribe_post: None,
         },
     );
     provider.add_email(
@@ -125,6 +127,9 @@ fn test_mock_provider_lifecycle() {
             is_flagged: false,
             has_unsubscribe: false,
             attachment_names: vec!["facture.pdf".to_string()],
+            list_id: None,
+            list_unsubscribe: None,
+            list_unsubscribe_post: None,
         },
     );
 
@@ -137,9 +142,7 @@ fn test_mock_provider_lifecycle() {
     assert_eq!(emails.len(), 2);
 
     // Move UID 10 to trash
-    let moved_count = provider
-        .move_to_trash("INBOX", &[10], "Corbeille")
-        .unwrap();
+    let moved_count = provider.move_to_trash("INBOX", &[10], "Corbeille").unwrap();
     assert_eq!(moved_count, 1);
 
     // INBOX should now have only 1 email
@@ -151,4 +154,50 @@ fn test_mock_provider_lifecycle() {
     let purged_count = provider.empty_trash("Corbeille").unwrap();
     assert_eq!(purged_count, 1);
     assert_eq!(provider.fetch_envelopes("Corbeille").unwrap().len(), 0);
+}
+
+#[test]
+fn test_folder_count_and_range_fetching() {
+    let mut provider = MockMailProvider::new();
+    provider.add_folder(FolderInfo::new("INBOX", vec![FolderAttribute::Inbox]));
+
+    for uid in 1..=10 {
+        provider.add_email(
+            "INBOX",
+            RawEmailEnvelope {
+                uid,
+                message_id: Some(format!("<msg{uid}@domain.com>")),
+                subject: format!("Test {uid}"),
+                from: "sender@domain.com".to_string(),
+                date_timestamp: 1_600_000_000,
+                size_bytes: 1000,
+                is_flagged: false,
+                has_unsubscribe: false,
+                attachment_names: vec![],
+                list_id: None,
+                list_unsubscribe: None,
+                list_unsubscribe_post: None,
+            },
+        );
+    }
+
+    // Check count
+    let count = provider.get_folder_message_count("INBOX").unwrap();
+    assert_eq!(count, 10);
+
+    // Range 1..=3
+    let chunk1 = provider.fetch_envelopes_range("INBOX", 1, 3).unwrap();
+    assert_eq!(chunk1.len(), 3);
+    assert_eq!(chunk1[0].uid, 1);
+    assert_eq!(chunk1[2].uid, 3);
+
+    // Range 8..=12 (should clamp to 10)
+    let chunk2 = provider.fetch_envelopes_range("INBOX", 8, 12).unwrap();
+    assert_eq!(chunk2.len(), 3);
+    assert_eq!(chunk2[0].uid, 8);
+    assert_eq!(chunk2[2].uid, 10);
+
+    // Out of bounds
+    let empty_chunk = provider.fetch_envelopes_range("INBOX", 20, 30).unwrap();
+    assert!(empty_chunk.is_empty());
 }

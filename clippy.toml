@@ -1,0 +1,4 @@
+# Clippy configuration
+# Allow unwrap and expect in tests while strictly forbidding them in production code
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

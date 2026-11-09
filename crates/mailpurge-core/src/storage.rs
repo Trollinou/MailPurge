@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::classifier::EmailClassification;
+use crate::unsubscribe::{parse_unsubscribe_headers, UnsubscribeMethod};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -15,6 +16,8 @@ pub enum StorageError {
     Serde(#[from] serde_json::Error),
     #[error("Invalid classification string: {0}")]
     InvalidClassification(String),
+    #[error("Database lock poisoned")]
+    LockPoisoned,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +46,9 @@ pub struct EmailRecord {
     pub is_flagged: bool,
     pub classification: EmailClassification,
     pub body_snippet: Option<String>,
+    pub list_id: Option<String>,
+    pub list_unsubscribe: Option<String>,
+    pub list_unsubscribe_post: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +59,20 @@ pub struct DomainStats {
     pub purgeable_count: u64,
     pub purgeable_size: u64,
     pub protected_count: u64,
+    pub is_personal_domain: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DistributionListGroup {
+    pub list_id: String,
+    pub list_name: String,
+    pub sender_address: String,
+    pub email_count: u64,
+    pub total_size: u64,
+    pub uids: Vec<u32>,
+    pub method: UnsubscribeMethod,
+    pub target: Option<String>,
+    pub post_body: Option<String>,
 }
 
 #[derive(Clone)]
@@ -76,7 +96,7 @@ impl MailStorageRepository {
     }
 
     pub fn init_schema(&self) -> Result<(), StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
 
         conn.execute_batch(
             r#"
@@ -104,6 +124,9 @@ impl MailStorageRepository {
                 is_flagged BOOLEAN NOT NULL,
                 classification TEXT NOT NULL,
                 body_snippet TEXT,
+                list_id TEXT,
+                list_unsubscribe TEXT,
+                list_unsubscribe_post TEXT,
                 PRIMARY KEY (account_id, folder_path, uid)
             );
 
@@ -112,14 +135,132 @@ impl MailStorageRepository {
             "#,
         )?;
 
-        // Migration for databases created before body_snippet was added
+        // Migration for databases created before new columns were added
         let _ = conn.execute("ALTER TABLE emails ADD COLUMN body_snippet TEXT;", []);
+        let _ = conn.execute("ALTER TABLE emails ADD COLUMN list_id TEXT;", []);
+        let _ = conn.execute("ALTER TABLE emails ADD COLUMN list_unsubscribe TEXT;", []);
+        let _ = conn.execute(
+            "ALTER TABLE emails ADD COLUMN list_unsubscribe_post TEXT;",
+            [],
+        );
+
+        // Invalidate any legacy previews that contained raw HTML / CSS
+        let _ = conn.execute(
+            "UPDATE emails SET body_snippet = NULL WHERE body_snippet LIKE '<!DOCTYPE%' OR body_snippet LIKE '<html%' OR body_snippet LIKE '%@media%' OR body_snippet LIKE '%!important%' OR body_snippet LIKE '%{font-family%';",
+            [],
+        );
+
+        drop(conn);
+        let _ = self.repair_unknown_domains();
 
         Ok(())
     }
 
+    /// Automatically repairs records that were saved with `root_domain = 'unknown'`.
+    pub fn repair_unknown_domains(&self) -> Result<usize, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT account_id, folder_path, uid, sender_address, list_id FROM emails WHERE root_domain = 'unknown'",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+
+        let mut to_update = Vec::new();
+        for r in rows {
+            let (account_id, folder, uid, sender, list_id) = r?;
+            if let Ok(extracted) = crate::domain_extractor::extract_sender_domain(&sender) {
+                if extracted.root_domain != "unknown" {
+                    to_update.push((
+                        account_id,
+                        folder,
+                        uid,
+                        extracted.root_domain,
+                        extracted.full_domain,
+                        extracted.email_address,
+                    ));
+                    continue;
+                }
+            }
+            if let Some(lid) = list_id {
+                if let Some(root) = crate::domain_extractor::extract_domain_from_list_id(&lid) {
+                    to_update.push((account_id, folder, uid, root.clone(), root, sender));
+                }
+            }
+        }
+
+        let count = to_update.len();
+        if count > 0 {
+            let mut update_stmt = conn.prepare(
+                "UPDATE emails SET root_domain = ?1, full_domain = ?2, sender_address = ?3 WHERE account_id = ?4 AND folder_path = ?5 AND uid = ?6",
+            )?;
+            for (acc, folder, uid, root, full, sender) in to_update {
+                let _ = update_stmt.execute(params![root, full, sender, acc, folder, uid]);
+            }
+        }
+
+        Ok(count)
+    }
+
+    pub fn create_account(
+        &self,
+        email: &str,
+        provider_type: &str,
+        display_name: &str,
+    ) -> Result<AccountRecord, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        conn.execute(
+            r#"
+            INSERT INTO accounts (email, provider_type, display_name)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(email) DO UPDATE SET
+                provider_type = excluded.provider_type,
+                display_name = excluded.display_name
+            "#,
+            params![email, provider_type, display_name],
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, email, provider_type, display_name FROM accounts WHERE email = ?1",
+        )?;
+        let account = stmt.query_row(params![email], |row| {
+            Ok(AccountRecord {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                provider_type: row.get(2)?,
+                display_name: row.get(3)?,
+            })
+        })?;
+        Ok(account)
+    }
+
+    pub fn get_account(&self, id: i64) -> Result<Option<AccountRecord>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut stmt = conn
+            .prepare("SELECT id, email, provider_type, display_name FROM accounts WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(AccountRecord {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                provider_type: row.get(2)?,
+                display_name: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn save_account(&self, account: &AccountRecord) -> Result<(), StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             r#"
             INSERT INTO accounts (id, email, provider_type, display_name)
@@ -140,8 +281,10 @@ impl MailStorageRepository {
     }
 
     pub fn list_accounts(&self) -> Result<Vec<AccountRecord>, StorageError> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, email, provider_type, display_name FROM accounts ORDER BY id ASC")?;
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, email, provider_type, display_name FROM accounts ORDER BY id ASC",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(AccountRecord {
                 id: row.get(0)?,
@@ -158,8 +301,20 @@ impl MailStorageRepository {
         Ok(accounts)
     }
 
+    /// Deletes an account and all its associated cached emails from storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` on SQLite execution failures.
+    pub fn delete_account(&self, id: i64) -> Result<(), StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        conn.execute("DELETE FROM emails WHERE account_id = ?1", params![id])?;
+        conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn upsert_emails(&self, emails: &[EmailRecord]) -> Result<(), StorageError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let tx = conn.transaction()?;
 
         {
@@ -168,8 +323,9 @@ impl MailStorageRepository {
                 INSERT INTO emails (
                     account_id, folder_path, uid, message_id, root_domain, full_domain,
                     sender_address, subject, received_at, size_bytes, has_unsubscribe,
-                    has_attachment, attachment_names, is_flagged, classification, body_snippet
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                    has_attachment, attachment_names, is_flagged, classification, body_snippet,
+                    list_id, list_unsubscribe, list_unsubscribe_post
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
                 ON CONFLICT(account_id, folder_path, uid) DO UPDATE SET
                     message_id = excluded.message_id,
                     root_domain = excluded.root_domain,
@@ -183,7 +339,10 @@ impl MailStorageRepository {
                     attachment_names = excluded.attachment_names,
                     is_flagged = excluded.is_flagged,
                     classification = excluded.classification,
-                    body_snippet = excluded.body_snippet
+                    body_snippet = excluded.body_snippet,
+                    list_id = excluded.list_id,
+                    list_unsubscribe = excluded.list_unsubscribe,
+                    list_unsubscribe_post = excluded.list_unsubscribe_post
                 "#,
             )?;
 
@@ -206,6 +365,9 @@ impl MailStorageRepository {
                     email.is_flagged,
                     email.classification.as_str(),
                     email.body_snippet,
+                    email.list_id,
+                    email.list_unsubscribe,
+                    email.list_unsubscribe_post,
                 ])?;
             }
         }
@@ -215,7 +377,7 @@ impl MailStorageRepository {
     }
 
     pub fn get_domain_stats(&self, account_id: i64) -> Result<Vec<DomainStats>, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
             r#"
             SELECT 
@@ -233,19 +395,23 @@ impl MailStorageRepository {
         )?;
 
         let rows = stmt.query_map(params![account_id], |row| {
+            let root_domain: String = row.get(0)?;
             let total_emails: i64 = row.get(1)?;
             let total_size: i64 = row.get(2)?;
             let purgeable_count: i64 = row.get(3)?;
             let purgeable_size: i64 = row.get(4)?;
             let protected_count: i64 = row.get(5)?;
+            let is_personal_domain =
+                crate::personal_domains::is_personal_email_provider(&root_domain);
 
             Ok(DomainStats {
-                root_domain: row.get(0)?,
+                root_domain,
                 total_emails: total_emails as u64,
                 total_size: total_size as u64,
                 purgeable_count: purgeable_count as u64,
                 purgeable_size: purgeable_size as u64,
                 protected_count: protected_count as u64,
+                is_personal_domain,
             })
         })?;
 
@@ -261,13 +427,14 @@ impl MailStorageRepository {
         account_id: i64,
         root_domain: &str,
     ) -> Result<Vec<EmailRecord>, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
             r#"
             SELECT 
                 account_id, folder_path, uid, message_id, root_domain, full_domain,
                 sender_address, subject, received_at, size_bytes, has_unsubscribe,
-                has_attachment, attachment_names, is_flagged, classification, body_snippet
+                has_attachment, attachment_names, is_flagged, classification, body_snippet,
+                list_id, list_unsubscribe, list_unsubscribe_post
             FROM emails
             WHERE account_id = ?1 AND root_domain = ?2
             ORDER BY received_at DESC
@@ -281,6 +448,7 @@ impl MailStorageRepository {
                 "PROTECTED_INVOICE" => EmailClassification::ProtectedInvoice,
                 "PROTECTED_FLAGGED" => EmailClassification::ProtectedFlagged,
                 "PROTECTED_USER" => EmailClassification::ProtectedUser,
+                "PROTECTED_PERSONAL" => EmailClassification::ProtectedPersonal,
                 "RECENT" => EmailClassification::Recent,
                 _ => EmailClassification::Purgeable,
             };
@@ -310,6 +478,9 @@ impl MailStorageRepository {
                 is_flagged: row.get(13)?,
                 classification,
                 body_snippet: row.get(15)?,
+                list_id: row.get(16)?,
+                list_unsubscribe: row.get(17)?,
+                list_unsubscribe_post: row.get(18)?,
             })
         })?;
 
@@ -320,6 +491,118 @@ impl MailStorageRepository {
         Ok(results)
     }
 
+    pub fn get_domain_distribution_lists(
+        &self,
+        account_id: i64,
+        root_domain: &str,
+    ) -> Result<Vec<DistributionListGroup>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT 
+                uid, sender_address, size_bytes, has_unsubscribe,
+                list_id, list_unsubscribe, list_unsubscribe_post
+            FROM emails
+            WHERE account_id = ?1 AND root_domain = ?2 AND (has_unsubscribe = 1 OR list_id IS NOT NULL OR list_unsubscribe IS NOT NULL)
+            ORDER BY received_at DESC
+            "#,
+        )?;
+
+        struct ListAccumulator {
+            list_name: String,
+            sender_address: String,
+            email_count: u64,
+            total_size: u64,
+            uids: Vec<u32>,
+            unsub_header: Option<String>,
+            post_header: Option<String>,
+        }
+
+        let mut map: std::collections::HashMap<String, ListAccumulator> =
+            std::collections::HashMap::new();
+
+        let rows = stmt.query_map(params![account_id, root_domain], |row| {
+            let uid: i64 = row.get(0)?;
+            let sender_address: String = row.get(1)?;
+            let size_bytes: i64 = row.get(2)?;
+            let _has_unsubscribe: bool = row.get(3)?;
+            let list_id: Option<String> = row.get(4)?;
+            let list_unsubscribe: Option<String> = row.get(5)?;
+            let list_unsubscribe_post: Option<String> = row.get(6)?;
+
+            Ok((
+                uid as u32,
+                sender_address,
+                size_bytes as u64,
+                list_id,
+                list_unsubscribe,
+                list_unsubscribe_post,
+            ))
+        })?;
+
+        for item in rows {
+            let (uid, sender, size, list_id_opt, unsub_opt, post_opt) = item?;
+            let group_key = list_id_opt
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| sender.clone());
+
+            let entry = map.entry(group_key.clone()).or_insert_with(|| {
+                let display_name = if let Some(lid) = &list_id_opt {
+                    lid.trim()
+                        .trim_matches(|c| c == '<' || c == '>')
+                        .to_string()
+                } else {
+                    sender.clone()
+                };
+                ListAccumulator {
+                    list_name: display_name,
+                    sender_address: sender.clone(),
+                    email_count: 0,
+                    total_size: 0,
+                    uids: Vec::new(),
+                    unsub_header: unsub_opt.clone(),
+                    post_header: post_opt.clone(),
+                }
+            });
+
+            entry.email_count += 1;
+            entry.total_size += size;
+            entry.uids.push(uid);
+            if entry.unsub_header.is_none() && unsub_opt.is_some() {
+                entry.unsub_header = unsub_opt;
+                entry.post_header = post_opt;
+            }
+        }
+
+        let mut results = Vec::new();
+        for (key, acc) in map {
+            let unsub_info =
+                parse_unsubscribe_headers(acc.unsub_header.as_deref(), acc.post_header.as_deref());
+
+            // Ne proposer que les groupes disposant d'un mécanisme de désabonnement valide (RFC 8058 ou RFC 2369)
+            if unsub_info.method == UnsubscribeMethod::None {
+                continue;
+            }
+
+            results.push(DistributionListGroup {
+                list_id: key,
+                list_name: acc.list_name,
+                sender_address: acc.sender_address,
+                email_count: acc.email_count,
+                total_size: acc.total_size,
+                uids: acc.uids,
+                method: unsub_info.method,
+                target: unsub_info.target,
+                post_body: unsub_info.post_body,
+            });
+        }
+
+        results.sort_by_key(|a| std::cmp::Reverse(a.total_size));
+        Ok(results)
+    }
+
     pub fn update_email_classification(
         &self,
         account_id: i64,
@@ -327,7 +610,7 @@ impl MailStorageRepository {
         uid: u32,
         new_classification: EmailClassification,
     ) -> Result<(), StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "UPDATE emails SET classification = ?1 WHERE account_id = ?2 AND folder_path = ?3 AND uid = ?4",
             params![new_classification.as_str(), account_id, folder_path, uid],
@@ -345,7 +628,7 @@ impl MailStorageRepository {
             return Ok(());
         }
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let tx = conn.transaction()?;
 
         {
@@ -359,6 +642,40 @@ impl MailStorageRepository {
         }
 
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_email_snippet(
+        &self,
+        account_id: i64,
+        folder_path: &str,
+        uid: u32,
+    ) -> Result<Option<String>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut stmt = conn.prepare(
+            "SELECT body_snippet FROM emails WHERE account_id = ?1 AND folder_path = ?2 AND uid = ?3 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![account_id, folder_path, uid as i64])?;
+        if let Some(row) = rows.next()? {
+            let snippet: Option<String> = row.get(0)?;
+            Ok(snippet)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn update_body_snippet(
+        &self,
+        account_id: i64,
+        folder_path: &str,
+        uid: u32,
+        snippet: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        conn.execute(
+            "UPDATE emails SET body_snippet = ?1 WHERE account_id = ?2 AND folder_path = ?3 AND uid = ?4",
+            params![snippet, account_id, folder_path, uid as i64],
+        )?;
         Ok(())
     }
 }

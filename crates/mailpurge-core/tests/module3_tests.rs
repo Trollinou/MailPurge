@@ -1,3 +1,5 @@
+#![allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
+
 use mailpurge_core::classifier::EmailClassification;
 use mailpurge_core::mock_provider::MockMailProvider;
 use mailpurge_core::provider_port::{MailProviderPort, RawEmailEnvelope};
@@ -53,6 +55,9 @@ fn test_7_never_purge_protected_or_recent_emails() {
                 is_flagged: c.classification == EmailClassification::ProtectedFlagged,
                 has_unsubscribe: false,
                 attachment_names: vec![],
+                list_id: None,
+                list_unsubscribe: None,
+                list_unsubscribe_post: None,
             },
         );
     }
@@ -108,6 +113,9 @@ fn test_8_batch_chunking_with_limit_500() {
                 is_flagged: false,
                 has_unsubscribe: true,
                 attachment_names: vec![],
+                list_id: None,
+                list_unsubscribe: None,
+                list_unsubscribe_post: None,
             },
         );
     }
@@ -152,6 +160,9 @@ fn test_dry_run_mode_leaves_server_untouched() {
             is_flagged: false,
             has_unsubscribe: false,
             attachment_names: vec![],
+            list_id: None,
+            list_unsubscribe: None,
+            list_unsubscribe_post: None,
         },
     );
 
@@ -163,12 +174,18 @@ fn test_dry_run_mode_leaves_server_untouched() {
     let report = PurgeExecutor::execute(&mut provider, &candidates, trash_folder, &config)
         .expect("Dry run should succeed");
 
-    assert_eq!(report.is_dry_run, true);
+    assert!(report.is_dry_run);
     assert_eq!(report.purged_count, 1);
     assert_eq!(report.purged_bytes, 40_000);
 
     // Provider state must be 100% untouched
     assert_eq!(provider.operations_log.len(), 0);
     assert_eq!(provider.fetch_envelopes("INBOX").unwrap().len(), 1);
-    assert_eq!(provider.fetch_envelopes(trash_folder).unwrap_or_default().len(), 0);
+    assert_eq!(
+        provider
+            .fetch_envelopes(trash_folder)
+            .unwrap_or_default()
+            .len(),
+        0
+    );
 }

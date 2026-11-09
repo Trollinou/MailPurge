@@ -1,7 +1,11 @@
+#![allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
+
 use mailpurge_core::classifier::{
     classify_email, ClassifierConfig, EmailClassification, EmailMetadataInput,
 };
-use mailpurge_core::domain_extractor::{extract_sender_domain, DomainExtractError};
+use mailpurge_core::domain_extractor::{
+    extract_domain_from_list_id, extract_sender_domain, DomainExtractError,
+};
 use mailpurge_core::imap_sequence::{chunk_sequence_set, format_sequence_set};
 
 #[test]
@@ -22,8 +26,8 @@ fn test_1_extract_root_domain_complex_addresses() {
     assert_eq!(res.root_domain, "amazon.co.uk");
 
     // 3. Simple email with subdomain
-    let res = extract_sender_domain("promo@newsletter.ldlc.com")
-        .expect("Should parse ldlc newsletter");
+    let res =
+        extract_sender_domain("promo@newsletter.ldlc.com").expect("Should parse ldlc newsletter");
     assert_eq!(res.email_address, "promo@newsletter.ldlc.com");
     assert_eq!(res.full_domain, "newsletter.ldlc.com");
     assert_eq!(res.root_domain, "ldlc.com");
@@ -53,6 +57,64 @@ fn test_extract_root_domain_edge_cases() {
     let res = extract_sender_domain("admin@localhost").expect("Should parse localhost");
     assert_eq!(res.root_domain, "localhost");
     assert_eq!(res.full_domain, "localhost");
+
+    // Real world edge cases
+    let res = extract_sender_domain("Jean Dupont, SARL <jean@dupont.fr>")
+        .expect("Unquoted comma in display name");
+    assert_eq!(res.root_domain, "dupont.fr");
+    assert_eq!(res.email_address, "jean@dupont.fr");
+
+    let res =
+        extract_sender_domain("=?UTF-8?Q?Le_Monde_-_L'=C3=A9dition_du_soir?= <contact@lemonde.fr>")
+            .expect("MIME encoded words");
+    assert_eq!(res.root_domain, "lemonde.fr");
+    assert_eq!(res.email_address, "contact@lemonde.fr");
+
+    let res = extract_sender_domain("<contact@service.free.fr>").expect("Angle brackets only");
+    assert_eq!(res.root_domain, "free.fr");
+
+    let res = extract_sender_domain("contact@service.free.fr (Support Technique)")
+        .expect("RFC 822 comment style");
+    assert_eq!(res.root_domain, "free.fr");
+
+    let res = extract_sender_domain("Support < contact@service.free.fr >")
+        .expect("Spaces inside angle brackets");
+    assert_eq!(res.root_domain, "free.fr");
+
+    let res = extract_sender_domain("From: \"Newsletter\" <news@info.fnac.com>")
+        .expect("Prefix From: included");
+    assert_eq!(res.root_domain, "fnac.com");
+
+    let res = extract_sender_domain("contact@badformat.com>").expect("Stray closing bracket");
+    assert_eq!(res.root_domain, "badformat.com");
+
+    // Multi-byte UTF-8 in display name (e.g. É, è, ç, etc. which panicked on byte boundary slicing)
+    let res = extract_sender_domain("Équipe Game On Tabletop <contact@gameontabletop.com>")
+        .expect("Multi-byte UTF-8 character at start of display name");
+    assert_eq!(res.root_domain, "gameontabletop.com");
+    assert_eq!(res.email_address, "contact@gameontabletop.com");
+
+    let res = extract_sender_domain("L'Équipe <newsletter@lequipe.fr>")
+        .expect("Multi-byte UTF-8 character in display name");
+    assert_eq!(res.root_domain, "lequipe.fr");
+
+    let res = extract_sender_domain("Société Générale <securite@societegenerale.fr>")
+        .expect("Accented display name");
+    assert_eq!(res.root_domain, "societegenerale.fr");
+
+    let res = extract_sender_domain("北京 <info@beijing.cn>").expect("CJK multi-byte display name");
+    assert_eq!(res.root_domain, "beijing.cn");
+
+    // List-ID tests
+    assert_eq!(
+        extract_domain_from_list_id("<newsletter.fnac.com>"),
+        Some("fnac.com".to_string())
+    );
+    assert_eq!(
+        extract_domain_from_list_id("\"Offres Spéciales\" <promos.vente-privee.com>"),
+        Some("vente-privee.com".to_string())
+    );
+    assert_eq!(extract_domain_from_list_id(""), None);
 }
 
 #[test]
@@ -82,6 +144,7 @@ fn test_2_detect_transactional_keywords_case_and_accent_insensitive() {
             is_flagged: false,
             has_unsubscribe: false,
             attachment_names: &[],
+            root_domain: None,
         };
         let classification = classify_email(&meta, &config, ref_time);
         assert_eq!(
@@ -107,6 +170,7 @@ fn test_3_protect_email_with_pdf_and_no_unsubscribe_even_ambiguous_subject() {
         is_flagged: false,
         has_unsubscribe: false,
         attachment_names: &["document_annexe.PDF".to_string()],
+        root_domain: None,
     };
     let classification = classify_email(&meta, &config, ref_time);
     assert_eq!(
@@ -123,6 +187,7 @@ fn test_3_protect_email_with_pdf_and_no_unsubscribe_even_ambiguous_subject() {
         is_flagged: false,
         has_unsubscribe: true,
         attachment_names: &["catalogue.pdf".to_string()],
+        root_domain: Some("fnac.com"),
     };
     let newsletter_class = classify_email(&newsletter_meta, &config, ref_time);
     assert_eq!(
@@ -145,6 +210,7 @@ fn test_protect_flagged_email() {
         is_flagged: true,
         has_unsubscribe: true,
         attachment_names: &[],
+        root_domain: None,
     };
     let classification = classify_email(&meta, &config, ref_time);
     assert_eq!(
@@ -169,6 +235,10 @@ fn test_classification_serde_screaming_snake_case() {
         "\"PROTECTED_FLAGGED\""
     );
     assert_eq!(
+        serde_json::to_string(&EmailClassification::ProtectedPersonal).unwrap(),
+        "\"PROTECTED_PERSONAL\""
+    );
+    assert_eq!(
         serde_json::to_string(&EmailClassification::Recent).unwrap(),
         "\"RECENT\""
     );
@@ -187,12 +257,52 @@ fn test_recent_email_classification() {
         is_flagged: false,
         has_unsubscribe: true,
         attachment_names: &[],
+        root_domain: None,
     };
     let classification = classify_email(&meta, &config, ref_time);
     assert_eq!(
         classification,
         EmailClassification::Recent,
         "Email under retention threshold must be Recent"
+    );
+}
+
+#[test]
+fn test_personal_domain_protection() {
+    let config = ClassifierConfig::default();
+    let ref_time = 1_700_000_000i64;
+    let old_time = ref_time - (120 * 86400); // 120 days old (> 60 days)
+
+    // Old email from orange.fr with normal casual conversation subject
+    let orange_meta = EmailMetadataInput {
+        uid: 105,
+        subject: "Photos du barbecue de dimanche",
+        received_at_timestamp: old_time,
+        is_flagged: false,
+        has_unsubscribe: false,
+        attachment_names: &[],
+        root_domain: Some("orange.fr"),
+    };
+    assert_eq!(
+        classify_email(&orange_meta, &config, ref_time),
+        EmailClassification::ProtectedPersonal,
+        "Emails from orange.fr must be protected as ProtectedPersonal"
+    );
+
+    // Old email from gmail.com
+    let gmail_meta = EmailMetadataInput {
+        uid: 106,
+        subject: "Salut, comment vas-tu depuis le temps ?",
+        received_at_timestamp: old_time,
+        is_flagged: false,
+        has_unsubscribe: false,
+        attachment_names: &[],
+        root_domain: Some("gmail.com"),
+    };
+    assert_eq!(
+        classify_email(&gmail_meta, &config, ref_time),
+        EmailClassification::ProtectedPersonal,
+        "Emails from gmail.com must be protected as ProtectedPersonal"
     );
 }
 
@@ -214,6 +324,7 @@ fn test_custom_classifier_config() {
         is_flagged: false,
         has_unsubscribe: false,
         attachment_names: &[],
+        root_domain: None,
     };
     assert_eq!(
         classify_email(&meta_kw, &custom_config, ref_time),
@@ -228,6 +339,7 @@ fn test_custom_classifier_config() {
         is_flagged: false,
         has_unsubscribe: false,
         attachment_names: &["sources.zip".to_string()],
+        root_domain: None,
     };
     assert_eq!(
         classify_email(&meta_att, &custom_config, ref_time),

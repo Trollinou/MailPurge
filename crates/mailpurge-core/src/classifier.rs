@@ -8,6 +8,7 @@ pub enum EmailClassification {
     ProtectedInvoice,
     ProtectedFlagged,
     ProtectedUser,
+    ProtectedPersonal,
     Recent,
 }
 
@@ -18,6 +19,7 @@ impl EmailClassification {
             Self::ProtectedInvoice => "PROTECTED_INVOICE",
             Self::ProtectedFlagged => "PROTECTED_FLAGGED",
             Self::ProtectedUser => "PROTECTED_USER",
+            Self::ProtectedPersonal => "PROTECTED_PERSONAL",
             Self::Recent => "RECENT",
         }
     }
@@ -70,9 +72,10 @@ pub struct EmailMetadataInput<'a> {
     pub is_flagged: bool,
     pub has_unsubscribe: bool,
     pub attachment_names: &'a [String],
+    pub root_domain: Option<&'a str>,
 }
 
-/// Classifies an email according to retention, flags, transactional content, and attachments.
+/// Classifies an email according to retention, flags, transactional content, personal domains, and attachments.
 pub fn classify_email(
     metadata: &EmailMetadataInput,
     config: &ClassifierConfig,
@@ -114,6 +117,13 @@ pub fn classify_email(
         return EmailClassification::ProtectedInvoice;
     }
 
-    // 5. Default: Purgeable
+    // 5. Personal / ISP domain protection (e.g. orange.fr, free.fr, gmail.com)
+    if let Some(domain) = metadata.root_domain {
+        if crate::personal_domains::is_personal_email_provider(domain) {
+            return EmailClassification::ProtectedPersonal;
+        }
+    }
+
+    // 6. Default: Purgeable
     EmailClassification::Purgeable
 }

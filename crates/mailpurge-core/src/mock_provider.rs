@@ -34,7 +34,23 @@ impl MailProviderPort for MockMailProvider {
         Ok(self.folders.clone())
     }
 
-    fn fetch_envelopes(&self, folder_path: &str) -> Result<Vec<RawEmailEnvelope>, MailProviderError> {
+    fn get_folder_message_count(&self, folder_path: &str) -> Result<u32, MailProviderError> {
+        match self.emails_by_folder.get(folder_path) {
+            Some(emails) => Ok(emails.len() as u32),
+            None => {
+                if self.folders.iter().any(|f| f.path == folder_path) {
+                    Ok(0)
+                } else {
+                    Err(MailProviderError::FolderNotFound(folder_path.to_string()))
+                }
+            }
+        }
+    }
+
+    fn fetch_envelopes(
+        &self,
+        folder_path: &str,
+    ) -> Result<Vec<RawEmailEnvelope>, MailProviderError> {
         match self.emails_by_folder.get(folder_path) {
             Some(emails) => Ok(emails.clone()),
             None => {
@@ -46,6 +62,35 @@ impl MailProviderPort for MockMailProvider {
                 }
             }
         }
+    }
+
+    fn fetch_envelopes_range(
+        &self,
+        folder_path: &str,
+        start_seq: u32,
+        end_seq: u32,
+    ) -> Result<Vec<RawEmailEnvelope>, MailProviderError> {
+        let emails = match self.emails_by_folder.get(folder_path) {
+            Some(e) => e,
+            None => {
+                if self.folders.iter().any(|f| f.path == folder_path) {
+                    return Ok(Vec::new());
+                }
+                return Err(MailProviderError::FolderNotFound(folder_path.to_string()));
+            }
+        };
+
+        if start_seq == 0 || start_seq > end_seq {
+            return Ok(Vec::new());
+        }
+
+        let start_idx = (start_seq.saturating_sub(1)) as usize;
+        let end_idx = (end_seq as usize).min(emails.len());
+        if start_idx >= emails.len() || start_idx >= end_idx {
+            return Ok(Vec::new());
+        }
+
+        Ok(emails[start_idx..end_idx].to_vec())
     }
 
     fn move_to_trash(
@@ -92,8 +137,10 @@ impl MailProviderPort for MockMailProvider {
         let count = trash_emails.len();
         trash_emails.clear();
 
-        self.operations_log
-            .push(format!("empty_trash '{}' ({} items)", trash_folder_path, count));
+        self.operations_log.push(format!(
+            "empty_trash '{}' ({} items)",
+            trash_folder_path, count
+        ));
 
         Ok(count)
     }

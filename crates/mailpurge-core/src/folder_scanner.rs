@@ -39,11 +39,7 @@ impl FolderInfo {
 
         // 2. Multilingual heuristic fallback on folder name
         let normalized = deunicode(&self.path).to_lowercase();
-        let last_segment = normalized
-            .rsplit('/')
-            .next()
-            .unwrap_or(&normalized)
-            .trim();
+        let last_segment = normalized.rsplit('/').next().unwrap_or(&normalized).trim();
 
         matches!(
             last_segment,
@@ -81,11 +77,7 @@ impl FolderInfo {
         }
 
         let normalized = deunicode(&self.path).to_lowercase();
-        let last_segment = normalized
-            .rsplit('/')
-            .next()
-            .unwrap_or(&normalized)
-            .trim();
+        let last_segment = normalized.rsplit('/').next().unwrap_or(&normalized).trim();
 
         let excluded_names = [
             "sent",

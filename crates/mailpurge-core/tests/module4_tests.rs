@@ -1,3 +1,5 @@
+#![allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
+
 use mailpurge_core::classifier::EmailClassification;
 use mailpurge_core::storage::{AccountRecord, EmailRecord, MailStorageRepository};
 
@@ -19,6 +21,18 @@ fn test_storage_account_and_email_lifecycle() {
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].email, "user@enterprise.com");
 
+    let retrieved = storage
+        .get_account(1)
+        .expect("Should get account")
+        .expect("Account exists");
+    assert_eq!(retrieved.email, "user@enterprise.com");
+
+    let created = storage
+        .create_account("auto@domain.com", "gmail", "Google Workspace")
+        .expect("Should create account with autoincrement");
+    assert!(created.id > 1);
+    assert_eq!(created.email, "auto@domain.com");
+
     // 2. Insert batch of emails from different domains and folders
     let emails = vec![
         EmailRecord {
@@ -38,6 +52,9 @@ fn test_storage_account_and_email_lifecycle() {
             is_flagged: false,
             classification: EmailClassification::Purgeable,
             body_snippet: Some("Découvrez nos offres exceptionnelles".to_string()),
+            list_id: Some("<news.fnac.com>".to_string()),
+            list_unsubscribe: Some("<https://news.fnac.com/unsub>".to_string()),
+            list_unsubscribe_post: Some("List-Unsubscribe=One-Click".to_string()),
         },
         EmailRecord {
             account_id: 1,
@@ -56,6 +73,9 @@ fn test_storage_account_and_email_lifecycle() {
             is_flagged: false,
             classification: EmailClassification::ProtectedInvoice,
             body_snippet: Some("Veuillez trouver ci-joint votre facture".to_string()),
+            list_id: None,
+            list_unsubscribe: None,
+            list_unsubscribe_post: None,
         },
         EmailRecord {
             account_id: 1,
@@ -74,10 +94,15 @@ fn test_storage_account_and_email_lifecycle() {
             is_flagged: false,
             classification: EmailClassification::Purgeable,
             body_snippet: Some("Nouveautés composants et PC".to_string()),
+            list_id: Some("<promo.ldlc.com>".to_string()),
+            list_unsubscribe: Some("<mailto:unsub@ldlc.com>".to_string()),
+            list_unsubscribe_post: None,
         },
     ];
 
-    storage.upsert_emails(&emails).expect("Should upsert emails");
+    storage
+        .upsert_emails(&emails)
+        .expect("Should upsert emails");
 
     // 3. Check Domain Stats Aggregation
     let stats = storage
@@ -109,12 +134,27 @@ fn test_storage_account_and_email_lifecycle() {
         Some("Veuillez trouver ci-joint votre facture")
     );
 
+    // 4a. Check distribution list detection
+    let lists = storage
+        .get_domain_distribution_lists(1, "fnac.com")
+        .expect("Should get distribution lists");
+    assert_eq!(lists.len(), 1);
+    assert_eq!(lists[0].list_id, "<news.fnac.com>");
+    assert_eq!(lists[0].email_count, 1);
+    assert_eq!(
+        lists[0].method,
+        mailpurge_core::unsubscribe::UnsubscribeMethod::OneClickPost
+    );
+
     // 4b. Toggle classification from Purgeable to ProtectedUser
     storage
         .update_email_classification(1, "INBOX", 101, EmailClassification::ProtectedUser)
         .expect("Should update classification to ProtectedUser");
     let updated_stats = storage.get_domain_stats(1).unwrap();
-    let fnac_stat = updated_stats.iter().find(|s| s.root_domain == "fnac.com").unwrap();
+    let fnac_stat = updated_stats
+        .iter()
+        .find(|s| s.root_domain == "fnac.com")
+        .unwrap();
     assert_eq!(fnac_stat.purgeable_count, 0);
     assert_eq!(fnac_stat.protected_count, 2);
 
@@ -122,6 +162,25 @@ fn test_storage_account_and_email_lifecycle() {
     storage
         .update_email_classification(1, "INBOX", 101, EmailClassification::Purgeable)
         .expect("Should update classification back to Purgeable");
+
+    // 4c. Test get and update body snippet
+    assert_eq!(
+        storage
+            .get_email_snippet(1, "INBOX", 101)
+            .unwrap()
+            .as_deref(),
+        Some("Découvrez nos offres exceptionnelles")
+    );
+    storage
+        .update_body_snippet(1, "INBOX", 101, "Nouveau contenu d'aperçu")
+        .expect("Should update snippet");
+    assert_eq!(
+        storage
+            .get_email_snippet(1, "INBOX", 101)
+            .unwrap()
+            .as_deref(),
+        Some("Nouveau contenu d'aperçu")
+    );
 
     // 5. Delete purged emails
     storage
@@ -135,4 +194,40 @@ fn test_storage_account_and_email_lifecycle() {
         .unwrap();
     assert_eq!(fnac_stat.total_emails, 1);
     assert_eq!(fnac_stat.purgeable_count, 0);
+
+    // 6. Test repair unknown domains
+    let unknown_email = EmailRecord {
+        account_id: 1,
+        folder_path: "INBOX".to_string(),
+        uid: 999,
+        message_id: Some("<msg999@test>".to_string()),
+        root_domain: "unknown".to_string(),
+        full_domain: "unknown".to_string(),
+        sender_address: "Newsletter, Boulanger <offres@boulanger.com>".to_string(),
+        subject: "Offre Spéciale".to_string(),
+        received_at: 1_600_000_000,
+        size_bytes: 10_000,
+        has_unsubscribe: true,
+        has_attachment: false,
+        attachment_names: vec![],
+        is_flagged: false,
+        classification: EmailClassification::Purgeable,
+        body_snippet: None,
+        list_id: None,
+        list_unsubscribe: None,
+        list_unsubscribe_post: None,
+    };
+    storage.upsert_emails(&[unknown_email]).unwrap();
+
+    let repaired = storage.repair_unknown_domains().unwrap();
+    assert_eq!(repaired, 1);
+
+    let stats = storage.get_domain_stats(1).unwrap();
+    let boulanger = stats.iter().find(|s| s.root_domain == "boulanger.com");
+    assert!(
+        boulanger.is_some(),
+        "Repaired email should be under boulanger.com"
+    );
+    let unknown = stats.iter().find(|s| s.root_domain == "unknown");
+    assert!(unknown.is_none(), "No emails should remain under unknown");
 }

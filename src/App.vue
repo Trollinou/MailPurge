@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, ref } from "vue";
 import { useMailStore, formatBytes } from "./stores/mailStore";
+import AddAccountModal from "./components/AddAccountModal.vue";
+import type { AccountRecord } from "./types";
 import {
   Mail,
   Trash2,
@@ -22,11 +24,56 @@ import {
   ArrowUpDown,
   Shield,
   RotateCcw,
+  Zap,
+  ExternalLink,
+  Send,
+  BellRing,
+  User,
+  Plus,
+  RefreshCw,
+  Loader2,
+  KeyRound,
 } from "lucide-vue-next";
 
 const store = useMailStore();
+const isAddAccountModalOpen = ref(false);
+const isPasswordModalOpen = ref(false);
+const newPassword = ref("");
+const passwordError = ref("");
+const isSubmittingPassword = ref(false);
+const accountToDelete = ref<AccountRecord | null>(null);
+const isDeletingAccount = ref(false);
+
+async function executeDeleteAccount() {
+  if (!accountToDelete.value) return;
+  try {
+    isDeletingAccount.value = true;
+    await store.deleteAccount(accountToDelete.value.id);
+    accountToDelete.value = null;
+  } catch (err) {
+    console.error("Delete account error:", err);
+  } finally {
+    isDeletingAccount.value = false;
+  }
+}
+
+async function handlePasswordSubmit() {
+  if (!store.currentAccountId || !newPassword.value) return;
+  try {
+    isSubmittingPassword.value = true;
+    passwordError.value = "";
+    await store.updateAccountPassword(store.currentAccountId, newPassword.value);
+    isPasswordModalOpen.value = false;
+    newPassword.value = "";
+  } catch (err) {
+    passwordError.value = String(err);
+  } finally {
+    isSubmittingPassword.value = false;
+  }
+}
 
 onMounted(async () => {
+  await store.initSyncListener();
   await store.fetchAccounts();
   if (store.accounts.length === 0) {
     // Automatically load demo data on first launch if empty
@@ -73,35 +120,132 @@ function formatDate(ts: number): string {
         <div class="p-3">
           <div class="flex items-center justify-between px-2 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
             <span>Comptes</span>
-            <button
-              @click="store.loadDemoData"
-              class="text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 text-[11px] normal-case"
-              title="Recharger le jeu d'essai démo"
-            >
-              <Sparkles class="w-3 h-3" />
-              <span>Démo</span>
-            </button>
+            <div class="flex items-center space-x-2">
+              <button
+                @click="isAddAccountModalOpen = true"
+                class="text-sky-400 hover:text-sky-300 flex items-center space-x-1 text-[11px] normal-case font-medium hover:underline"
+                title="Ajouter un compte réel (M365, Gmail, iCloud, IMAP)"
+              >
+                <Plus class="w-3 h-3" />
+                <span>+ Compte</span>
+              </button>
+              <button
+                @click="store.loadDemoData"
+                class="text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 text-[11px] normal-case"
+                title="Recharger le jeu d'essai démo"
+              >
+                <Sparkles class="w-3 h-3" />
+                <span>Démo</span>
+              </button>
+            </div>
           </div>
 
           <div class="space-y-1">
-            <button
+            <div
               v-for="account in store.accounts"
               :key="account.id"
               @click="store.selectAccount(account.id)"
               :class="[
-                'w-full text-left p-2.5 rounded-lg transition-all flex flex-col space-y-1',
+                'w-full text-left p-2.5 rounded-lg transition-all flex flex-col space-y-1 cursor-pointer',
                 store.currentAccountId === account.id
-                  ? 'bg-indigo-600/20 text-white border border-indigo-500/40'
-                  : 'hover:bg-slate-800/60 text-slate-300'
+                  ? 'bg-indigo-600/20 text-white border border-indigo-500/40 shadow-sm'
+                  : 'hover:bg-slate-800/60 text-slate-300 border border-transparent'
               ]"
             >
               <div class="flex items-center justify-between w-full">
                 <span class="font-medium truncate text-xs">{{ account.display_name }}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                  {{ account.provider_type === 'microsoft365' ? 'M365' : 'IMAP' }}
-                </span>
+                <div class="flex items-center gap-1.5">
+                  <button
+                    v-if="store.currentAccountId === account.id"
+                    @click.stop="store.syncCurrentAccount"
+                    :disabled="store.isSyncing"
+                    class="text-slate-400 hover:text-sky-400 p-1 rounded hover:bg-slate-800/80 transition"
+                    title="Synchroniser la boîte maintenant"
+                  >
+                    <RefreshCw :class="['w-3 h-3', store.isSyncing ? 'animate-spin text-sky-400' : '']" />
+                  </button>
+                  <button
+                    v-if="account.id !== 1"
+                    @click.stop="isPasswordModalOpen = true"
+                    class="text-slate-400 hover:text-sky-400 p-1 rounded hover:bg-slate-800/80 transition"
+                    title="Mettre à jour le mot de passe"
+                  >
+                    <KeyRound class="w-3 h-3" />
+                  </button>
+                  <button
+                    v-if="account.id !== 1"
+                    @click.stop="accountToDelete = account"
+                    class="text-slate-400 hover:text-rose-400 p-1 rounded hover:bg-slate-800/80 transition"
+                    title="Supprimer ce compte"
+                  >
+                    <Trash2 class="w-3 h-3" />
+                  </button>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono uppercase">
+                    {{ account.provider_type }}
+                  </span>
+                </div>
               </div>
               <span class="text-[11px] text-slate-400 truncate">{{ account.email }}</span>
+            </div>
+          </div>
+
+          <!-- Indicateur de Scan IMAP en Direct -->
+          <div
+            v-if="store.isSyncing"
+            class="mt-2 p-2.5 bg-sky-950/40 border border-sky-500/30 rounded-xl space-y-1.5"
+          >
+            <div class="flex items-center justify-between text-[11px] text-sky-300 font-medium">
+              <span class="flex items-center gap-1.5 truncate">
+                <Loader2 class="w-3 h-3 animate-spin shrink-0 text-sky-400" />
+                <span class="truncate">{{ store.scanProgress?.folder || 'Synchronisation...' }}</span>
+              </span>
+              <span class="shrink-0 font-mono text-[10px]">
+                <span v-if="store.scanProgress && store.scanProgress.total > 0">
+                  {{ store.scanProgress.scanned }} / {{ store.scanProgress.total }}
+                </span>
+                <span v-else>...</span>
+              </span>
+            </div>
+            <div class="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
+              <div
+                class="bg-sky-500 h-1.5 rounded-full transition-all duration-300"
+                :style="{
+                  width: store.scanProgress && store.scanProgress.total > 0
+                    ? Math.min(100, (store.scanProgress.scanned / store.scanProgress.total) * 100) + '%'
+                    : '50%'
+                }"
+              ></div>
+            </div>
+            <p class="text-[10px] text-slate-400 truncate">
+              {{ store.scanProgress?.message || "Préparation de l'aspiration..." }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Curseur d'Ancienneté Dynamique -->
+        <div class="px-4 py-3 mx-3 mt-1 rounded-xl bg-slate-800/40 border border-slate-800/80 space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-slate-400 flex items-center space-x-1.5">
+              <Clock class="w-3.5 h-3.5 text-indigo-400" />
+              <span>Ancienneté requise</span>
+            </span>
+            <span class="font-bold text-indigo-300 text-xs font-mono">
+              > {{ store.retentionDays }} jours
+            </span>
+          </div>
+          <div class="grid grid-cols-4 gap-1 p-0.5 bg-slate-900 border border-slate-800 rounded-lg">
+            <button
+              v-for="days in [30, 45, 60, 90]"
+              :key="days"
+              @click="store.setRetentionDays(days)"
+              :class="[
+                'py-1 text-[11px] font-mono rounded font-medium transition',
+                store.retentionDays === days
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              ]"
+            >
+              {{ days }}j
             </button>
           </div>
         </div>
@@ -207,6 +351,106 @@ function formatDate(ts: number): string {
         </div>
       </header>
 
+      <!-- Bandeau de Progression de Synchronisation IMAP en Direct -->
+      <div
+        v-if="store.isSyncing"
+        class="bg-sky-950/60 border-b border-sky-500/30 px-4 py-3 flex items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2 duration-200"
+      >
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="w-8 h-8 rounded-lg bg-sky-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
+            <Loader2 class="w-4 h-4 animate-spin" />
+          </div>
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold text-sky-200">
+                Synchronisation en cours
+              </span>
+              <span
+                v-if="store.scanProgress?.folder"
+                class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-sky-900/60 text-sky-300 border border-sky-700/40 truncate"
+              >
+                {{ store.scanProgress.folder }}
+              </span>
+            </div>
+            <p class="text-xs text-sky-300/80 truncate">
+              {{ store.scanProgress?.message || "Analyse et indexation des emails..." }}
+            </p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3 shrink-0">
+          <div class="text-right">
+            <div class="text-xs font-mono font-medium text-sky-200">
+              <span v-if="store.scanProgress && store.scanProgress.total > 0">
+                {{ store.scanProgress.scanned }} / {{ store.scanProgress.total }} emails
+                ({{ Math.round((store.scanProgress.scanned / store.scanProgress.total) * 100) }}%)
+              </span>
+              <span v-else>
+                Initialisation...
+              </span>
+            </div>
+            <div class="w-44 bg-slate-900 rounded-full h-2 mt-1 overflow-hidden border border-sky-900/50">
+              <div
+                class="bg-gradient-to-r from-sky-500 to-indigo-500 h-2 rounded-full transition-all duration-300"
+                :style="{
+                  width: store.scanProgress && store.scanProgress.total > 0
+                    ? Math.min(100, (store.scanProgress.scanned / store.scanProgress.total) * 100) + '%'
+                    : '40%'
+                }"
+              ></div>
+            </div>
+          </div>
+
+          <button
+            @click="store.isSyncing = false"
+            class="text-slate-400 hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-800/60 transition shrink-0"
+            title="Arrêter l'affichage"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Bandeau d'Erreur de Synchronisation -->
+      <div
+        v-if="!store.isSyncing && store.scanProgress?.phase === 'error'"
+        class="bg-red-950/60 border-b border-red-500/30 px-4 py-3 flex items-center justify-between gap-4 animate-in fade-in"
+      >
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="w-8 h-8 rounded-lg bg-red-500/20 border border-red-500/30 flex items-center justify-center text-red-400 shrink-0">
+            <AlertCircle class="w-4 h-4" />
+          </div>
+          <div class="min-w-0">
+            <span class="text-xs font-semibold text-red-200">Échec de synchronisation</span>
+            <p class="text-xs text-red-300/80 truncate">
+              {{ store.scanProgress?.message || 'Erreur lors de la synchronisation' }}
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <button
+            v-if="store.currentAccountId && store.currentAccountId !== 1"
+            @click="isPasswordModalOpen = true"
+            class="px-2.5 py-1 bg-sky-900/60 hover:bg-sky-800 text-sky-200 border border-sky-700/50 rounded-lg text-xs font-medium transition"
+          >
+            Saisir le mot de passe
+          </button>
+          <button
+            v-if="store.currentAccountId && store.currentAccountId !== 1"
+            @click="accountToDelete = store.currentAccount"
+            class="px-2.5 py-1 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/50 rounded-lg text-xs font-medium transition"
+          >
+            Supprimer le compte
+          </button>
+          <button
+            @click="store.syncCurrentAccount"
+            class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium transition"
+          >
+            Réessayer
+          </button>
+        </div>
+      </div>
+
       <!-- Liste des Domaines -->
       <div class="flex-1 overflow-y-auto divide-y divide-slate-800/60">
         <div
@@ -228,6 +472,14 @@ function formatDate(ts: number): string {
             <div class="min-w-0">
               <div class="flex items-center space-x-2">
                 <span class="font-semibold text-slate-200 text-sm truncate">{{ domain.root_domain }}</span>
+                <span
+                  v-if="domain.is_personal_domain"
+                  class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-950/80 text-sky-300 border border-sky-800/60 flex items-center space-x-1 shrink-0"
+                  title="Fournisseur d'accès ou messagerie personnelle (Sanctuarisé par défaut)"
+                >
+                  <User class="w-3 h-3 text-sky-400" />
+                  <span>Messagerie Personnelle</span>
+                </span>
                 <span class="text-[11px] text-slate-500">({{ domain.total_emails }} mails)</span>
               </div>
               <div class="flex items-center space-x-3 text-xs mt-1">
@@ -260,8 +512,30 @@ function formatDate(ts: number): string {
           </div>
         </div>
 
-        <div v-if="store.filteredDomainStats.length === 0" class="p-12 text-center text-slate-500">
-          Aucun domaine trouvé.
+        <div
+          v-if="store.filteredDomainStats.length === 0 && !store.isSyncing"
+          class="p-16 text-center space-y-4"
+        >
+          <div
+            class="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 mx-auto"
+          >
+            <Inbox class="w-6 h-6 text-slate-500" />
+          </div>
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold text-slate-300">
+              Aucun email synchronisé
+            </h3>
+            <p class="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+              Cette boîte de messagerie n'a pas encore été analysée ou ne contient aucun email en cache local.
+            </p>
+          </div>
+          <button
+            @click="store.syncCurrentAccount"
+            class="inline-flex items-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold rounded-xl text-xs transition shadow-lg shadow-sky-500/10"
+          >
+            <RefreshCw class="w-3.5 h-3.5" />
+            <span>Lancer la synchronisation</span>
+          </button>
         </div>
       </div>
     </main>
@@ -273,34 +547,69 @@ function formatDate(ts: number): string {
       <!-- En-tête de l'Inspecteur -->
       <div class="p-4 border-b border-slate-800 flex items-center justify-between">
         <div>
-          <h3 class="font-semibold text-white text-sm">
-            {{ store.selectedDomain || "Sélectionnez un domaine" }}
-          </h3>
+          <div class="flex items-center space-x-2">
+            <h3 class="font-semibold text-white text-sm">
+              {{ store.selectedDomain || "Sélectionnez un domaine" }}
+            </h3>
+            <span
+              v-if="store.currentDomainStats?.is_personal_domain"
+              class="px-1.5 py-0.5 rounded text-[10px] bg-sky-950 text-sky-300 border border-sky-800/60"
+            >
+              Messagerie Personnelle
+            </span>
+          </div>
           <p class="text-xs text-slate-400">Inspection détaillée & filet de sécurité</p>
         </div>
       </div>
 
-      <!-- Onglets : Candidats vs Protégés -->
+      <!-- Bannière d'information pour domaines personnels -->
+      <div
+        v-if="store.currentDomainStats?.is_personal_domain"
+        class="mx-3 mt-3 p-2 rounded-lg bg-sky-950/40 border border-sky-800/40 text-[11px] text-sky-200 flex items-start space-x-2"
+      >
+        <ShieldCheck class="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+        <span class="leading-tight">
+          Ce domaine est un fournisseur de messagerie personnelle : les correspondances privées sont sanctuarisées par défaut contre la purge automatique.
+        </span>
+      </div>
+
+      <!-- Onglets : Candidats vs Listes vs Protégés -->
       <div class="flex border-b border-slate-800 text-xs">
         <button
           @click="store.activeTab = 'purgeable'"
           :class="[
-            'flex-1 py-2.5 text-center font-medium border-b-2 transition flex items-center justify-center space-x-1.5',
+            'flex-1 py-2.5 text-center font-medium border-b-2 transition flex items-center justify-center space-x-1',
             store.activeTab === 'purgeable'
               ? 'border-indigo-500 text-white bg-slate-800/40'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           ]"
         >
-          <span>Candidats Corbeille</span>
+          <span>Candidats</span>
           <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 font-mono">
             {{ store.purgeableEmails.length }}
           </span>
         </button>
 
         <button
+          @click="store.activeTab = 'subscriptions'"
+          :class="[
+            'flex-1 py-2.5 text-center font-medium border-b-2 transition flex items-center justify-center space-x-1',
+            store.activeTab === 'subscriptions'
+              ? 'border-purple-500 text-white bg-slate-800/40'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
+          ]"
+        >
+          <BellRing class="w-3.5 h-3.5 text-purple-400" />
+          <span>Listes</span>
+          <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 font-mono">
+            {{ store.distributionLists.length }}
+          </span>
+        </button>
+
+        <button
           @click="store.activeTab = 'protected'"
           :class="[
-            'flex-1 py-2.5 text-center font-medium border-b-2 transition flex items-center justify-center space-x-1.5',
+            'flex-1 py-2.5 text-center font-medium border-b-2 transition flex items-center justify-center space-x-1',
             store.activeTab === 'protected'
               ? 'border-emerald-500 text-white bg-slate-800/40'
               : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -399,6 +708,93 @@ function formatDate(ts: number): string {
           </div>
         </div>
 
+        <!-- Onglet : Listes & Abonnements -->
+        <div v-if="store.activeTab === 'subscriptions'" class="space-y-3">
+          <div
+            v-for="list in store.distributionLists"
+            :key="list.list_id"
+            class="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2.5 shadow-sm"
+          >
+            <!-- En-tête de la liste / badges de méthode RFC -->
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="font-semibold text-xs text-slate-100 truncate" :title="list.list_name">
+                  {{ list.list_name }}
+                </div>
+                <div class="text-[11px] text-slate-400 truncate mt-0.5" :title="list.sender_address">
+                  {{ list.sender_address }}
+                </div>
+              </div>
+
+              <!-- Badge Méthode Détectée -->
+              <div class="shrink-0">
+                <span
+                  v-if="list.method === 'ONE_CLICK_POST'"
+                  class="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-950/70 text-emerald-300 border border-emerald-800/60 flex items-center space-x-1"
+                  title="Désinscription directe en 1-clic en arrière-plan (RFC 8058)"
+                >
+                  <Zap class="w-3 h-3 text-emerald-400 fill-emerald-400" />
+                  <span>1-Clic Direct</span>
+                </span>
+                <span
+                  v-else-if="list.method === 'MAILTO'"
+                  class="px-2 py-0.5 rounded text-[10px] font-medium bg-sky-950/70 text-sky-300 border border-sky-800/60 flex items-center space-x-1"
+                  title="Envoi d'un email de désabonnement via votre client mail (RFC 2369)"
+                >
+                  <Send class="w-3 h-3 text-sky-400" />
+                  <span>Email mailto</span>
+                </span>
+                <span
+                  v-else-if="list.method === 'WEB_URL'"
+                  class="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-950/70 text-amber-300 border border-amber-800/60 flex items-center space-x-1"
+                  title="Ouverture de la page web de gestion des préférences"
+                >
+                  <ExternalLink class="w-3 h-3 text-amber-400" />
+                  <span>Lien Web</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Volume et identifiant -->
+            <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800/50">
+              <span>{{ list.email_count }} email{{ list.email_count > 1 ? 's' : '' }}</span>
+              <span class="font-mono text-slate-300">{{ formatBytes(list.total_size) }}</span>
+            </div>
+
+            <!-- Boutons d'action -->
+            <div v-if="list.method !== 'NONE'" class="flex flex-col space-y-1.5 pt-1">
+              <!-- Action principale : Désabonner + Corbeille -->
+              <button
+                @click="store.unsubscribeAndPurge(list.list_id, true)"
+                :disabled="store.isPurging"
+                class="w-full px-2.5 py-1.5 rounded text-xs font-medium bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 flex items-center justify-center space-x-1.5 transition disabled:opacity-50"
+              >
+                <Trash2 class="w-3.5 h-3.5 text-rose-400" />
+                <span>Se désabonner + Mettre en corbeille</span>
+              </button>
+
+              <!-- Action secondaire : Désabonner uniquement -->
+              <button
+                @click="store.unsubscribeAndPurge(list.list_id, false)"
+                :disabled="store.isPurging"
+                class="w-full px-2.5 py-1 rounded text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center space-x-1 transition disabled:opacity-50"
+              >
+                <BellRing class="w-3 h-3 text-slate-400" />
+                <span>Se désabonner uniquement</span>
+              </button>
+            </div>
+
+            <div v-else class="p-2 rounded bg-amber-950/30 border border-amber-800/40 text-[11px] text-amber-300/90 flex items-center space-x-1.5">
+              <AlertCircle class="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Aucun mécanisme de désabonnement standard (RFC 8058 / RFC 2369) détecté.</span>
+            </div>
+          </div>
+
+          <div v-if="store.distributionLists.length === 0" class="p-8 text-center text-slate-500 text-xs">
+            Aucune liste de diffusion détectée pour ce domaine.
+          </div>
+        </div>
+
         <!-- Liste des emails protégés -->
         <div v-if="store.activeTab === 'protected'" class="space-y-2">
           <div
@@ -427,6 +823,13 @@ function formatDate(ts: number): string {
               >
                 <ShieldCheck class="w-3 h-3 text-purple-400" />
                 <span>Protection Manuelle</span>
+              </span>
+              <span
+                v-else-if="email.classification?.toUpperCase() === 'PROTECTED_PERSONAL'"
+                class="px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800/50 text-[10px] flex items-center space-x-1"
+              >
+                <User class="w-3 h-3 text-sky-400" />
+                <span>Messagerie Personnelle</span>
               </span>
               <span
                 v-else-if="email.classification?.toUpperCase() === 'RECENT'"
@@ -518,10 +921,23 @@ function formatDate(ts: number): string {
         <!-- Notification de statut -->
         <div
           v-if="store.statusMessage"
-          class="p-2 rounded bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300 flex items-center space-x-1.5"
+          :class="[
+            'p-2.5 rounded-lg border text-xs flex items-start space-x-2 transition',
+            store.statusMessage.toLowerCase().includes('erreur') || store.statusMessage.toLowerCase().includes('échec')
+              ? 'bg-rose-950/70 border-rose-800/60 text-rose-200'
+              : 'bg-slate-800/80 border-slate-700 text-slate-300'
+          ]"
         >
-          <CheckCircle2 class="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-          <span class="truncate">{{ store.statusMessage }}</span>
+          <component
+            :is="store.statusMessage.toLowerCase().includes('erreur') || store.statusMessage.toLowerCase().includes('échec') ? AlertCircle : CheckCircle2"
+            :class="[
+              'w-4 h-4 shrink-0 mt-0.5',
+              store.statusMessage.toLowerCase().includes('erreur') || store.statusMessage.toLowerCase().includes('échec')
+                ? 'text-rose-400'
+                : 'text-emerald-400'
+            ]"
+          />
+          <span class="break-words leading-relaxed flex-1">{{ store.statusMessage }}</span>
         </div>
       </div>
     </aside>
@@ -562,6 +978,12 @@ function formatDate(ts: number): string {
                 class="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800/50 text-[10px]"
               >
                 Protégé Manuellement
+              </span>
+              <span
+                v-else-if="store.previewedEmail.classification?.toUpperCase() === 'PROTECTED_PERSONAL'"
+                class="px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800/50 text-[10px]"
+              >
+                Messagerie Personnelle (FAI / Webmail)
               </span>
               <span
                 v-else-if="store.previewedEmail.classification?.toUpperCase() === 'RECENT'"
@@ -623,11 +1045,29 @@ function formatDate(ts: number): string {
               <span>{{ att }}</span>
             </span>
           </div>
+
+          <!-- Unsubscribe header badge in preview -->
+          <div
+            v-if="store.previewedEmail.has_unsubscribe"
+            class="pt-1 flex items-center space-x-1.5 text-[11px] text-purple-300"
+          >
+            <BellRing class="w-3 h-3 text-purple-400" />
+            <span>Cet email provient d'une liste de distribution (en-tête de désinscription détecté).</span>
+          </div>
         </div>
 
         <!-- Modal Body Content -->
         <div class="flex-1 overflow-y-auto p-5 text-xs leading-relaxed text-slate-200 whitespace-pre-wrap font-sans bg-slate-950/30">
-          {{ store.previewedEmail.body_snippet || "Aucun contenu de prévisualisation disponible pour cet email." }}
+          <div
+            v-if="!store.previewedEmail.body_snippet"
+            class="flex items-center justify-center py-12 text-slate-400 space-x-2"
+          >
+            <Loader2 class="w-4 h-4 animate-spin text-indigo-400" />
+            <span>Chargement de l'aperçu du message depuis le serveur...</span>
+          </div>
+          <template v-else>
+            {{ store.previewedEmail.body_snippet }}
+          </template>
         </div>
 
         <!-- Modal Footer Actions -->
@@ -657,6 +1097,128 @@ function formatDate(ts: number): string {
             class="px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
           >
             Fermer
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal d'ajout de compte -->
+    <AddAccountModal
+      :is-open="isAddAccountModalOpen"
+      @close="isAddAccountModalOpen = false"
+    />
+
+    <!-- Modal de mise à jour du mot de passe -->
+    <div
+      v-if="isPasswordModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+    >
+      <div
+        class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden p-6 space-y-4"
+      >
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <KeyRound class="w-5 h-5 text-sky-400" />
+            <h3 class="text-sm font-semibold text-slate-100">
+              Identifiants de connexion
+            </h3>
+          </div>
+          <button
+            @click="isPasswordModalOpen = false"
+            class="text-slate-400 hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800 transition"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <p class="text-xs text-slate-400 leading-relaxed">
+          Entrez le mot de passe pour le compte
+          <span class="font-medium text-slate-200">{{ store.currentAccount?.email }}</span>.
+          Il sera validé auprès du serveur IMAP puis sauvegardé de manière chiffrée dans votre trousseau OS.
+        </p>
+
+        <div
+          v-if="passwordError"
+          class="p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-400"
+        >
+          {{ passwordError }}
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="block text-xs font-medium text-slate-300">
+            Mot de passe de messagerie
+          </label>
+          <input
+            v-model="newPassword"
+            type="password"
+            placeholder="Mot de passe ou mot de passe d'application"
+            class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500 font-mono"
+            @keyup.enter="handlePasswordSubmit"
+          />
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2">
+          <button
+            @click="isPasswordModalOpen = false"
+            class="px-3 py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+          >
+            Annuler
+          </button>
+          <button
+            @click="handlePasswordSubmit"
+            :disabled="!newPassword || isSubmittingPassword"
+            class="px-4 py-2 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-semibold rounded-xl text-xs flex items-center gap-1.5 transition"
+          >
+            <Loader2 v-if="isSubmittingPassword" class="w-3.5 h-3.5 animate-spin" />
+            <span>{{ isSubmittingPassword ? "Vérification..." : "Enregistrer et tester" }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Confirmation de suppression de compte -->
+    <div
+      v-if="accountToDelete"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+    >
+      <div
+        class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+      >
+        <div class="flex items-center gap-3">
+          <div
+            class="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0"
+          >
+            <Trash2 class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-100">
+              Supprimer le compte
+            </h3>
+            <p class="text-xs text-slate-400">
+              Cette action est irréversible
+            </p>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-300 leading-relaxed">
+          Voulez-vous supprimer le compte
+          <strong class="text-white">{{ accountToDelete.display_name }}</strong> ainsi que toutes ses données et son cache local ?
+        </p>
+
+        <div class="flex items-center justify-end gap-2 pt-2">
+          <button
+            @click="accountToDelete = null"
+            class="px-3 py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+          >
+            Annuler
+          </button>
+          <button
+            @click="executeDeleteAccount"
+            :disabled="isDeletingAccount"
+            class="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-semibold rounded-xl text-xs flex items-center gap-1.5 transition shadow-lg shadow-rose-600/20"
+          >
+            <Loader2 v-if="isDeletingAccount" class="w-3.5 h-3.5 animate-spin" />
+            <span>{{ isDeletingAccount ? "Suppression..." : "Supprimer définitivement" }}</span>
           </button>
         </div>
       </div>

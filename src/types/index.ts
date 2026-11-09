@@ -12,6 +12,7 @@ export interface DomainStats {
   purgeable_count: number;
   purgeable_size: number;
   protected_count: number;
+  is_personal_domain?: boolean;
 }
 
 export type EmailClassification =
@@ -19,6 +20,7 @@ export type EmailClassification =
   | "PROTECTED_INVOICE"
   | "PROTECTED_FLAGGED"
   | "PROTECTED_USER"
+  | "PROTECTED_PERSONAL"
   | "RECENT";
 
 export type DomainSortOption = "size" | "count" | "alpha";
@@ -50,4 +52,33 @@ export interface PurgeReport {
   batches_executed: number;
   is_dry_run: boolean;
   details_by_folder: Record<string, number[]>;
+}
+
+export type UnsubscribeMethod = "ONE_CLICK_POST" | "MAILTO" | "WEB_URL" | "NONE";
+
+export interface DistributionListGroup {
+  list_id: string;
+  list_name: string;
+  sender_address: string;
+  email_count: number;
+  total_size: number;
+  uids: number[];
+  method: UnsubscribeMethod;
+  target: string | null;
+  post_body: string | null;
+}
+
+export interface UnsubscribeReport {
+  message: string;
+  emails_purged: number;
+  bytes_freed: number;
+}
+
+export interface ScanProgressEvent {
+  account_id: number;
+  folder: string;
+  scanned: number;
+  total: number;
+  phase: "discovering" | "scanning" | "completed" | "error" | string;
+  message?: string;
 }

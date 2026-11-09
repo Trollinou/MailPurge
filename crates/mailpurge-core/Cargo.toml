@@ -2,6 +2,7 @@
 name = "mailpurge-core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 psl = "2.1"
@@ -14,5 +15,21 @@ thiserror = "2.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 imap = { version = "3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
 imap-proto = "0.16"
+ureq = "2.10"
+open = "5.3"
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+sha2 = "0.10"
+base64 = "0.22"
+
+[lints]
+workspace = true
 
 [dev-dependencies]
+rstest = "0.24"
+mockall = "0.13"
+proptest = "1.6"
+pretty_assertions = "1.4"
+
+[package.metadata.cargo-machete]
+ignored = ["chrono", "imap-proto"]
+
