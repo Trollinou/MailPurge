@@ -155,6 +155,26 @@ fn test_protect_flagged_email() {
 }
 
 #[test]
+fn test_classification_serde_screaming_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&EmailClassification::Purgeable).unwrap(),
+        "\"PURGEABLE\""
+    );
+    assert_eq!(
+        serde_json::to_string(&EmailClassification::ProtectedInvoice).unwrap(),
+        "\"PROTECTED_INVOICE\""
+    );
+    assert_eq!(
+        serde_json::to_string(&EmailClassification::ProtectedFlagged).unwrap(),
+        "\"PROTECTED_FLAGGED\""
+    );
+    assert_eq!(
+        serde_json::to_string(&EmailClassification::Recent).unwrap(),
+        "\"RECENT\""
+    );
+}
+
+#[test]
 fn test_recent_email_classification() {
     let config = ClassifierConfig::default(); // 60 days
     let ref_time = 1_700_000_000i64;
