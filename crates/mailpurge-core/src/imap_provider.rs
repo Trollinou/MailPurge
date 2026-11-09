@@ -1,6 +1,6 @@
+use async_imap::imap_proto::types::{BodyStructure, NameAttribute};
 use async_trait::async_trait;
 use futures::StreamExt;
-use imap_proto::types::{BodyStructure, NameAttribute};
 use tokio::sync::Mutex;
 
 use crate::folder_scanner::{FolderAttribute, FolderInfo};
@@ -510,7 +510,12 @@ impl ImapProvider {
         let auth = self.config.auth.clone();
         let username = self.config.username.clone();
 
-        eprintln!("[IMAP] Tentative de connexion TLS asynchrone vers {server}:{port} (login: {username})...");
+        tracing::info!(
+            server = %server,
+            port,
+            username = %username,
+            "Tentative de connexion TLS asynchrone IMAP..."
+        );
 
         let connect_fut = async {
             let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
@@ -567,7 +572,7 @@ impl ImapProvider {
                 }
             };
 
-            eprintln!("[IMAP] Connexion et authentification réussies vers {server}:{port}");
+            tracing::info!(server = %server, port, "Connexion et authentification réussies");
             Ok(session)
         };
 
@@ -577,7 +582,7 @@ impl ImapProvider {
                 let msg = format!(
                     "Délai d'attente dépassé (timeout 12s) vers {server}:{port} — Le serveur ne répond pas (port bloqué ou restriction réseau fournisseur)"
                 );
-                eprintln!("[IMAP] {msg}");
+                tracing::error!(server = %server, port, "{msg}");
                 MailProviderError::ConnectionError(msg)
             })?
     }

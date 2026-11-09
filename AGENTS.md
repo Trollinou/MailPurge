@@ -37,6 +37,8 @@ Tout développement d'une nouvelle fonctionnalité ou correction de bug DOIT sui
   - Toujours utiliser `BODY.PEEK` pour ne jamais marquer un email non lu comme lu lors de l'analyse.
   - Découper les commandes `UID MOVE` ou `UID STORE` par lots (chunks de 500 UIDs max) et compacter les plages d'UIDs (`1:5,8,10:15`).
   - L'action de purge par défaut déplace vers `\Trash` sans exécuter `EXPUNGE` sur la corbeille. Le vidage de la corbeille est une commande distincte nécessitant une confirmation explicite.
+- **Encapsulation Synchrone dans Runtime Tokio (`spawn_blocking`) :** Tout appel I/O synchrone (`ureq::post`, `ureq::get`, ou accès disque SQLite avec `rusqlite`) invoqué depuis un contexte asynchrone Tokio DOIT être encapsulé dans `tokio::task::spawn_blocking(move || { ... }).await` afin de préserver la réactivité du pool de threads de travail et de l'interface Tauri.
+- **Journalisation Structurée :** Utiliser exclusivement l'écosystème `tracing` (`tracing::info!`, `tracing::debug!`, `tracing::warn!`, `tracing::error!`). L'usage de `println!` ou `eprintln!` est interdit dans le code applicatif hors tests.
 - **Tests Unitaires :** Dans les modules `#[cfg(test)]`, l'usage de `.unwrap()` ou `.expect("raison explicite")` est toléré via `#[allow(clippy::unwrap_used, clippy::expect_used)]`.
 
 ---

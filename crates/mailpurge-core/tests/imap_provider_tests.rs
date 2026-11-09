@@ -1,7 +1,7 @@
 //! Tests for IMAP provider adapter.
 #![allow(missing_docs)]
 
-use imap_proto::types::{
+use async_imap::imap_proto::types::{
     BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentDisposition, ContentEncoding,
     ContentType, NameAttribute,
 };

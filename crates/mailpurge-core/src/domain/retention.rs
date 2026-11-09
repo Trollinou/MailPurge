@@ -2,6 +2,7 @@
 //!
 //! Enforces business invariants on email age thresholds before eligibility for purge.
 
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -94,6 +95,25 @@ impl RetentionPolicy {
             .checked_sub(retention_seconds)
             .ok_or(RetentionPolicyError::TimestampOverflow)
     }
+
+    /// Calculates the cutoff [`DateTime<Utc>`] for a given reference date.
+    /// Emails received before this date are considered older than the retention threshold.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RetentionPolicyError::TimestampOverflow`] if date subtraction fails.
+    pub fn cutoff_date(
+        &self,
+        reference_date: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>, RetentionPolicyError> {
+        let retention_days = i64::from(self.retention_days.get());
+        let duration =
+            Duration::try_days(retention_days).ok_or(RetentionPolicyError::TimestampOverflow)?;
+
+        reference_date
+            .checked_sub_signed(duration)
+            .ok_or(RetentionPolicyError::TimestampOverflow)
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +162,14 @@ mod tests {
         let policy = RetentionPolicy::new(days).unwrap();
         let cutoff = policy.cutoff_timestamp(reference).unwrap();
         assert_eq!(cutoff, expected);
+    }
+
+    #[test]
+    fn test_cutoff_date_calculation() {
+        let policy = RetentionPolicy::new(30).unwrap();
+        let reference = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let cutoff = policy.cutoff_date(reference).unwrap();
+        assert_eq!(cutoff.timestamp(), 1_700_000_000 - (30 * SECONDS_PER_DAY));
     }
 
     proptest! {

@@ -138,6 +138,7 @@ pub fn parse_unsubscribe_headers(
 
 /// Execute unsubscription based on detected method.
 pub fn execute_unsubscribe(info: &UnsubscribeInfo, dry_run: bool) -> Result<String, String> {
+    tracing::info!(method = ?info.method, dry_run, "Exécution de la demande de désabonnement");
     match info.method {
         UnsubscribeMethod::None => {
             Err("Aucun mécanisme de désabonnement valide détecté".to_string())
