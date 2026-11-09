@@ -1,6 +1,12 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
-import type { AccountRecord, DomainStats, EmailRecord, PurgeReport } from "../types";
+import type {
+  AccountRecord,
+  DomainSortOption,
+  DomainStats,
+  EmailRecord,
+  PurgeReport,
+} from "../types";
 
 export const useMailStore = defineStore("mail", {
   state: () => ({
@@ -15,6 +21,8 @@ export const useMailStore = defineStore("mail", {
     isPurging: false,
     activeTab: "purgeable" as "purgeable" | "protected",
     searchQuery: "",
+    sortBy: "size" as DomainSortOption,
+    previewedEmail: null as EmailRecord | null,
     lastReport: null as PurgeReport | null,
     statusMessage: "" as string,
   }),
@@ -25,10 +33,21 @@ export const useMailStore = defineStore("mail", {
 
     filteredDomainStats: (state) => {
       const q = state.searchQuery.trim().toLowerCase();
-      if (!q) return state.domainStats;
-      return state.domainStats.filter((d) =>
-        d.root_domain.toLowerCase().includes(q)
-      );
+      let list = state.domainStats;
+      if (q) {
+        list = list.filter((d) => d.root_domain.toLowerCase().includes(q));
+      }
+
+      const sorted = [...list];
+      if (state.sortBy === "size") {
+        sorted.sort((a, b) => b.purgeable_size - a.purgeable_size);
+      } else if (state.sortBy === "count") {
+        sorted.sort((a, b) => b.total_emails - a.total_emails);
+      } else if (state.sortBy === "alpha") {
+        sorted.sort((a, b) => a.root_domain.localeCompare(b.root_domain));
+      }
+
+      return sorted;
     },
 
     totalPurgeableBytes: (state) => {
@@ -147,6 +166,44 @@ export const useMailStore = defineStore("mail", {
         this.selectedUidsToPurge.delete(uid);
       } else {
         this.selectedUidsToPurge.add(uid);
+      }
+    },
+
+    openPreview(email: EmailRecord) {
+      this.previewedEmail = email;
+    },
+
+    closePreview() {
+      this.previewedEmail = null;
+    },
+
+    async toggleEmailProtection(email: EmailRecord) {
+      if (!this.currentAccountId) return;
+      const targetClassification =
+        email.classification === "PURGEABLE" ? "PROTECTED_USER" : "PURGEABLE";
+
+      try {
+        await invoke("update_email_classification", {
+          accountId: this.currentAccountId,
+          folderPath: email.folder_path,
+          uid: email.uid,
+          newClassification: targetClassification,
+        });
+
+        // Update local state immediately
+        email.classification = targetClassification;
+        if (targetClassification === "PURGEABLE") {
+          this.selectedUidsToPurge.add(email.uid);
+          this.statusMessage = `Email marqué comme candidat à la corbeille.`;
+        } else {
+          this.selectedUidsToPurge.delete(email.uid);
+          this.statusMessage = `Email protégé manuellement.`;
+        }
+
+        // Refresh stats from SQLite in background
+        await this.refreshDomainStats();
+      } catch (err) {
+        this.statusMessage = "Erreur lors du changement de statut: " + String(err);
       }
     },
 

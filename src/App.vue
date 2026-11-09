@@ -5,6 +5,7 @@ import {
   Mail,
   Trash2,
   ShieldCheck,
+  ShieldAlert,
   CheckSquare,
   Square,
   Search,
@@ -16,6 +17,11 @@ import {
   Inbox,
   Clock,
   Sparkles,
+  Eye,
+  X,
+  ArrowUpDown,
+  Shield,
+  RotateCcw,
 } from "lucide-vue-next";
 
 const store = useMailStore();
@@ -34,6 +40,8 @@ function formatDate(ts: number): string {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 </script>
@@ -138,21 +146,64 @@ function formatDate(ts: number): string {
     <!-- PANNEAU 2 : TABLEAU DES DOMAINES (Central)               -->
     <!-- ======================================================== -->
     <main class="flex-1 flex flex-col min-w-0 bg-slate-950 border-r border-slate-800">
-      <!-- En-tête avec Recherche -->
+      <!-- En-tête avec Recherche et Tri -->
       <header class="p-4 border-b border-slate-800 flex items-center justify-between gap-4">
         <div>
           <h2 class="text-base font-semibold text-white">Domaines Détectés</h2>
-          <p class="text-xs text-slate-400">Classés par volume d'espace récupérable (eTLD+1)</p>
+          <p class="text-xs text-slate-400">Regroupement par domaine racine (eTLD+1)</p>
         </div>
 
-        <div class="relative w-64">
-          <Search class="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
-          <input
-            v-model="store.searchQuery"
-            type="text"
-            placeholder="Filtrer un domaine..."
-            class="w-full bg-slate-900 border border-slate-700/60 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-          />
+        <div class="flex items-center space-x-2.5">
+          <!-- Tri par options -->
+          <div class="flex items-center bg-slate-900 border border-slate-700/60 rounded-lg p-0.5 text-xs">
+            <button
+              @click="store.sortBy = 'size'"
+              :class="[
+                'px-2.5 py-1 rounded transition text-xs font-medium',
+                store.sortBy === 'size'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              ]"
+              title="Trier par volume purgeable décroissant"
+            >
+              Volume
+            </button>
+            <button
+              @click="store.sortBy = 'count'"
+              :class="[
+                'px-2.5 py-1 rounded transition text-xs font-medium',
+                store.sortBy === 'count'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              ]"
+              title="Trier par nombre total de mails"
+            >
+              Nb Mails
+            </button>
+            <button
+              @click="store.sortBy = 'alpha'"
+              :class="[
+                'px-2.5 py-1 rounded transition text-xs font-medium',
+                store.sortBy === 'alpha'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              ]"
+              title="Trier par ordre alphabétique"
+            >
+              A-Z
+            </button>
+          </div>
+
+          <!-- Barre de Recherche -->
+          <div class="relative w-56">
+            <Search class="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
+            <input
+              v-model="store.searchQuery"
+              type="text"
+              placeholder="Filtrer..."
+              class="w-full bg-slate-900 border border-slate-700/60 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+            />
+          </div>
         </div>
       </header>
 
@@ -201,7 +252,7 @@ function formatDate(ts: number): string {
             <div
               v-if="domain.protected_count > 0"
               class="flex items-center space-x-1 px-2 py-1 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-800/40 text-[11px]"
-              title="Emails sanctuarisés (Factures PDF, étoiles/flags)"
+              title="Emails sanctuarisés (Factures, flags, protection manuelle)"
             >
               <ShieldCheck class="w-3.5 h-3.5" />
               <span>{{ domain.protected_count }} protégé{{ domain.protected_count > 1 ? 's' : '' }}</span>
@@ -284,34 +335,62 @@ function formatDate(ts: number): string {
           <div
             v-for="email in store.purgeableEmails"
             :key="email.uid"
-            @click="store.toggleSelectUid(email.uid)"
             :class="[
-              'p-2.5 rounded-lg border transition-all cursor-pointer flex items-start space-x-2.5',
+              'p-2.5 rounded-lg border transition-all flex flex-col space-y-2',
               store.selectedUidsToPurge.has(email.uid)
                 ? 'bg-indigo-950/20 border-indigo-500/40 text-slate-100'
                 : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
             ]"
           >
-            <component
-              :is="store.selectedUidsToPurge.has(email.uid) ? CheckSquare : Square"
-              :class="['w-4 h-4 mt-0.5 shrink-0', store.selectedUidsToPurge.has(email.uid) ? 'text-indigo-400' : 'text-slate-600']"
-            />
-            <div class="min-w-0 flex-1">
-              <div class="font-medium text-xs text-slate-200 line-clamp-1">
-                {{ email.subject }}
+            <div class="flex items-start space-x-2.5">
+              <button
+                @click.stop="store.toggleSelectUid(email.uid)"
+                class="mt-0.5 shrink-0 focus:outline-none"
+              >
+                <component
+                  :is="store.selectedUidsToPurge.has(email.uid) ? CheckSquare : Square"
+                  :class="['w-4 h-4', store.selectedUidsToPurge.has(email.uid) ? 'text-indigo-400' : 'text-slate-600']"
+                />
+              </button>
+
+              <div class="min-w-0 flex-1 cursor-pointer" @click="store.openPreview(email)">
+                <div class="font-medium text-xs text-slate-200 line-clamp-1 hover:text-indigo-300 transition">
+                  {{ email.subject }}
+                </div>
+                <div class="flex items-center justify-between text-[11px] text-slate-400 mt-1">
+                  <span class="truncate">{{ email.sender_address }}</span>
+                  <span class="font-mono shrink-0 ml-2">{{ formatBytes(email.size_bytes) }}</span>
+                </div>
+                <div class="flex items-center space-x-2 text-[10px] text-slate-400 mt-1">
+                  <span class="flex items-center space-x-1">
+                    <Inbox class="w-3 h-3" />
+                    <span>{{ email.folder_path }}</span>
+                  </span>
+                  <span>•</span>
+                  <span>{{ formatDate(email.received_at) }}</span>
+                </div>
               </div>
-              <div class="flex items-center justify-between text-[11px] text-slate-400 mt-1">
-                <span class="truncate">{{ email.sender_address }}</span>
-                <span class="font-mono shrink-0 ml-2">{{ formatBytes(email.size_bytes) }}</span>
-              </div>
-              <div class="flex items-center space-x-2 text-[10px] text-slate-400 mt-1">
-                <span class="flex items-center space-x-1">
-                  <Inbox class="w-3 h-3" />
-                  <span>{{ email.folder_path }}</span>
-                </span>
-                <span>•</span>
-                <span>{{ formatDate(email.received_at) }}</span>
-              </div>
+            </div>
+
+            <!-- Actions sur l'email : Aperçu et Basculer vers Protégé -->
+            <div class="flex items-center justify-end space-x-2 pt-1 border-t border-slate-800/60 text-xs">
+              <button
+                @click.stop="store.openPreview(email)"
+                class="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-300 hover:bg-slate-700 flex items-center space-x-1 transition"
+                title="Prévisualiser cet email"
+              >
+                <Eye class="w-3 h-3 text-indigo-400" />
+                <span>Aperçu</span>
+              </button>
+
+              <button
+                @click.stop="store.toggleEmailProtection(email)"
+                class="px-2 py-0.5 rounded text-[11px] bg-emerald-950/70 text-emerald-300 border border-emerald-800/40 hover:bg-emerald-900/60 flex items-center space-x-1 transition"
+                title="Basculer vers les protégés (ne jamais supprimer)"
+              >
+                <Shield class="w-3 h-3 text-emerald-400" />
+                <span>Protéger</span>
+              </button>
             </div>
           </div>
 
@@ -325,7 +404,7 @@ function formatDate(ts: number): string {
           <div
             v-for="email in store.protectedEmails"
             :key="email.uid"
-            class="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 text-slate-300 space-y-1.5"
+            class="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 text-slate-300 space-y-2"
           >
             <div class="flex items-center justify-between">
               <span
@@ -343,6 +422,13 @@ function formatDate(ts: number): string {
                 <span>Email Étoilé / Marqué</span>
               </span>
               <span
+                v-else-if="email.classification === 'PROTECTED_USER'"
+                class="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800/50 text-[10px] flex items-center space-x-1"
+              >
+                <ShieldCheck class="w-3 h-3 text-purple-400" />
+                <span>Protection Manuelle</span>
+              </span>
+              <span
                 v-else-if="email.classification === 'RECENT'"
                 class="px-2 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800/50 text-[10px] flex items-center space-x-1"
               >
@@ -352,7 +438,10 @@ function formatDate(ts: number): string {
               <span class="text-[11px] font-mono text-slate-500">{{ formatBytes(email.size_bytes) }}</span>
             </div>
 
-            <div class="font-medium text-xs text-slate-200 line-clamp-1">
+            <div
+              class="font-medium text-xs text-slate-200 line-clamp-1 cursor-pointer hover:text-indigo-300 transition"
+              @click="store.openPreview(email)"
+            >
               {{ email.subject }}
             </div>
 
@@ -363,6 +452,27 @@ function formatDate(ts: number): string {
             <div v-if="email.attachment_names.length > 0" class="text-[11px] text-emerald-400 flex items-center space-x-1">
               <FileText class="w-3 h-3" />
               <span>{{ email.attachment_names.join(', ') }}</span>
+            </div>
+
+            <!-- Actions sur l'email protégé : Aperçu et Rendre purgeable -->
+            <div class="flex items-center justify-end space-x-2 pt-1 border-t border-slate-800/60 text-xs">
+              <button
+                @click.stop="store.openPreview(email)"
+                class="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-300 hover:bg-slate-700 flex items-center space-x-1 transition"
+                title="Prévisualiser cet email"
+              >
+                <Eye class="w-3 h-3 text-indigo-400" />
+                <span>Aperçu</span>
+              </button>
+
+              <button
+                @click.stop="store.toggleEmailProtection(email)"
+                class="px-2 py-0.5 rounded text-[11px] bg-rose-950/70 text-rose-300 border border-rose-800/40 hover:bg-rose-900/60 flex items-center space-x-1 transition"
+                title="Basculer vers les candidats corbeille"
+              >
+                <Trash2 class="w-3 h-3 text-rose-400" />
+                <span>Rendre purgeable</span>
+              </button>
             </div>
           </div>
 
@@ -415,5 +525,141 @@ function formatDate(ts: number): string {
         </div>
       </div>
     </aside>
+
+    <!-- ======================================================== -->
+    <!-- MODAL : PRÉVISUALISATION D'UN EMAIL                      -->
+    <!-- ======================================================== -->
+    <div
+      v-if="store.previewedEmail"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+      @click.self="store.closePreview"
+    >
+      <div class="bg-slate-900 border border-slate-700 rounded-xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+        <!-- Modal Header -->
+        <div class="p-4 border-b border-slate-800 flex items-start justify-between bg-slate-950/50">
+          <div class="min-w-0 pr-4">
+            <div class="flex items-center space-x-2 mb-1">
+              <span
+                v-if="store.previewedEmail.classification === 'PURGEABLE'"
+                class="px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800/50 text-[10px]"
+              >
+                Candidat Corbeille
+              </span>
+              <span
+                v-else-if="store.previewedEmail.classification === 'PROTECTED_INVOICE'"
+                class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/50 text-[10px]"
+              >
+                Facture / Reçu protégé (PDF)
+              </span>
+              <span
+                v-else-if="store.previewedEmail.classification === 'PROTECTED_FLAGGED'"
+                class="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800/50 text-[10px]"
+              >
+                Message Étoilé
+              </span>
+              <span
+                v-else-if="store.previewedEmail.classification === 'PROTECTED_USER'"
+                class="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800/50 text-[10px]"
+              >
+                Protégé Manuellement
+              </span>
+              <span
+                v-else-if="store.previewedEmail.classification === 'RECENT'"
+                class="px-2 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800/50 text-[10px]"
+              >
+                Récent (&lt; 60j)
+              </span>
+              <span class="text-xs text-slate-500 font-mono">
+                UID: {{ store.previewedEmail.uid }}
+              </span>
+            </div>
+            <h3 class="font-bold text-base text-white leading-snug">
+              {{ store.previewedEmail.subject }}
+            </h3>
+          </div>
+
+          <button
+            @click="store.closePreview"
+            class="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition"
+          >
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+
+        <!-- Modal Meta details -->
+        <div class="px-5 py-3 bg-slate-900/60 border-b border-slate-800 text-xs text-slate-300 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="text-slate-500 mr-2">De :</span>
+              <span class="font-medium text-slate-200">{{ store.previewedEmail.sender_address }}</span>
+            </div>
+            <div class="font-mono text-slate-400 text-[11px]">
+              {{ formatBytes(store.previewedEmail.size_bytes) }}
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between text-[11px] text-slate-400">
+            <div class="flex items-center space-x-2">
+              <span class="text-slate-500">Dossier :</span>
+              <span class="text-slate-300 font-medium">{{ store.previewedEmail.folder_path }}</span>
+            </div>
+            <div>
+              {{ formatDate(store.previewedEmail.received_at) }}
+            </div>
+          </div>
+
+          <!-- Attachments -->
+          <div
+            v-if="store.previewedEmail.attachment_names.length > 0"
+            class="pt-1 flex items-center space-x-2 text-[11px] text-emerald-400"
+          >
+            <span class="text-slate-500">Pièces jointes :</span>
+            <span
+              v-for="att in store.previewedEmail.attachment_names"
+              :key="att"
+              class="px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/40 text-[11px] flex items-center space-x-1"
+            >
+              <FileText class="w-3 h-3" />
+              <span>{{ att }}</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Modal Body Content -->
+        <div class="flex-1 overflow-y-auto p-5 text-xs leading-relaxed text-slate-200 whitespace-pre-wrap font-sans bg-slate-950/30">
+          {{ store.previewedEmail.body_snippet || "Aucun contenu de prévisualisation disponible pour cet email." }}
+        </div>
+
+        <!-- Modal Footer Actions -->
+        <div class="p-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between">
+          <div>
+            <button
+              @click="store.toggleEmailProtection(store.previewedEmail)"
+              :class="[
+                'px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition',
+                store.previewedEmail.classification === 'PURGEABLE'
+                  ? 'bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 border border-emerald-700/50'
+                  : 'bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-700/50'
+              ]"
+            >
+              <component
+                :is="store.previewedEmail.classification === 'PURGEABLE' ? ShieldCheck : Trash2"
+                class="w-4 h-4"
+              />
+              <span>
+                {{ store.previewedEmail.classification === 'PURGEABLE' ? 'Basculer en Protégé' : 'Rendre Purgeable' }}
+              </span>
+            </button>
+          </div>
+
+          <button
+            @click="store.closePreview"
+            class="px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+          >
+            Fermer
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

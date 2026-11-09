@@ -37,6 +37,7 @@ fn test_storage_account_and_email_lifecycle() {
             attachment_names: vec![],
             is_flagged: false,
             classification: EmailClassification::Purgeable,
+            body_snippet: Some("Découvrez nos offres exceptionnelles".to_string()),
         },
         EmailRecord {
             account_id: 1,
@@ -54,6 +55,7 @@ fn test_storage_account_and_email_lifecycle() {
             attachment_names: vec!["facture.pdf".to_string()],
             is_flagged: false,
             classification: EmailClassification::ProtectedInvoice,
+            body_snippet: Some("Veuillez trouver ci-joint votre facture".to_string()),
         },
         EmailRecord {
             account_id: 1,
@@ -71,6 +73,7 @@ fn test_storage_account_and_email_lifecycle() {
             attachment_names: vec![],
             is_flagged: false,
             classification: EmailClassification::Purgeable,
+            body_snippet: Some("Nouveautés composants et PC".to_string()),
         },
     ];
 
@@ -101,6 +104,24 @@ fn test_storage_account_and_email_lifecycle() {
         .get_emails_by_domain(1, "fnac.com")
         .expect("Should query emails for fnac.com");
     assert_eq!(fnac_emails.len(), 2);
+    assert_eq!(
+        fnac_emails[0].body_snippet.as_deref(),
+        Some("Veuillez trouver ci-joint votre facture")
+    );
+
+    // 4b. Toggle classification from Purgeable to ProtectedUser
+    storage
+        .update_email_classification(1, "INBOX", 101, EmailClassification::ProtectedUser)
+        .expect("Should update classification to ProtectedUser");
+    let updated_stats = storage.get_domain_stats(1).unwrap();
+    let fnac_stat = updated_stats.iter().find(|s| s.root_domain == "fnac.com").unwrap();
+    assert_eq!(fnac_stat.purgeable_count, 0);
+    assert_eq!(fnac_stat.protected_count, 2);
+
+    // Toggle back to Purgeable
+    storage
+        .update_email_classification(1, "INBOX", 101, EmailClassification::Purgeable)
+        .expect("Should update classification back to Purgeable");
 
     // 5. Delete purged emails
     storage

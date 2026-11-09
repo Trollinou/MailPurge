@@ -2,7 +2,9 @@ use std::fs;
 use std::sync::Mutex;
 use tauri::State;
 
-use mailpurge_core::classifier::{classify_email, ClassifierConfig, EmailMetadataInput};
+use mailpurge_core::classifier::{
+    classify_email, ClassifierConfig, EmailClassification, EmailMetadataInput,
+};
 use mailpurge_core::domain_extractor::extract_sender_domain;
 use mailpurge_core::mock_provider::MockMailProvider;
 use mailpurge_core::provider_port::MailProviderPort;
@@ -96,6 +98,29 @@ fn execute_purge(
 }
 
 #[tauri::command]
+fn update_email_classification(
+    state: State<AppState>,
+    account_id: i64,
+    folder_path: String,
+    uid: u32,
+    new_classification: String,
+) -> Result<(), String> {
+    let classification = match new_classification.as_str() {
+        "PURGEABLE" => EmailClassification::Purgeable,
+        "PROTECTED_INVOICE" => EmailClassification::ProtectedInvoice,
+        "PROTECTED_FLAGGED" => EmailClassification::ProtectedFlagged,
+        "PROTECTED_USER" => EmailClassification::ProtectedUser,
+        "RECENT" => EmailClassification::Recent,
+        _ => return Err(format!("Classification inconnue: {new_classification}")),
+    };
+
+    state
+        .storage
+        .update_email_classification(account_id, &folder_path, uid, classification)
+        .map_err(|e| format!("Erreur mise à jour classification: {e}"))
+}
+
+#[tauri::command]
 fn empty_trash(state: State<AppState>, _account_id: i64) -> Result<usize, String> {
     let mut provider = state.mock_provider.lock().unwrap();
     provider
@@ -130,6 +155,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
         atts: Vec<String>,
         is_flagged: bool,
         folder: &'static str,
+        body_snippet: &'static str,
     }
 
     let samples = vec![
@@ -144,6 +170,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Profitez de remises exceptionnelles sur les rayons informatique, audio et jeux vidéo pendant 48 heures seulement. Livraison gratuite dès 25€ d'achat.",
         },
         DemoItem {
             from: "no-reply@news.fnac.com",
@@ -155,6 +182,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Il ne vous reste que quelques heures pour profiter de nos ventes flash exclusives adhérents Fnac+. Ne manquez pas cette opportunité.",
         },
         DemoItem {
             from: "facturation@commandes.fnac.com",
@@ -166,6 +194,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec!["facture_fnac_98234.pdf".to_string()],
             is_flagged: false,
             folder: "Achats/2023",
+            body_snippet: "Bonjour Etienne, veuillez trouver ci-joint en format PDF votre facture d'un montant de 549,99 € réglée par carte bancaire pour votre commande #98234.",
         },
         DemoItem {
             from: "sav@fnac.com",
@@ -177,6 +206,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec!["garantie.pdf".to_string()],
             is_flagged: false,
             folder: "Achats/2023",
+            body_snippet: "Votre extension de garantie 3 ans constructeur a bien été enregistrée pour votre écran Dell UltraSharp. Conservez précieusement ce justificatif.",
         },
 
         // LDLC (Tech newsletters & protected order)
@@ -190,6 +220,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Les derniers GPU et CPU nouvelle génération sont enfin arrivés chez LDLC. Découvrez nos benchmarks complets et configurez votre machine sur mesure.",
         },
         DemoItem {
             from: "info@newsletter.ldlc.com",
@@ -201,6 +232,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Notre équipe technique a concocté pour vous le meilleur rapport performance/prix pour jouer en 1440p sans compromis. Montage express garanti.",
         },
         DemoItem {
             from: "commandes@ldlc.com",
@@ -212,6 +244,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Votre commande LDLC n°4410 contenant votre alimentation modulaire a été expédiée via Chronopost. Numéro de suivi disponible sur votre espace client.",
         },
 
         // AMAZON (Large invoices & daily marketing)
@@ -225,6 +258,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Thank you for shopping with us. We'll send a confirmation once your package ships. View your order details anytime in your Amazon account.",
         },
         DemoItem {
             from: "vendeur-facture@service-client.amazon.co.uk",
@@ -236,6 +270,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec!["invoice.pdf".to_string()],
             is_flagged: false,
             folder: "Achats/2023",
+            body_snippet: "Veuillez trouver ci-joint votre facture officielle mentionnant la TVA déductible pour votre achat professionnel auprès du vendeur tiers Marketplace.",
         },
         DemoItem {
             from: "marketing@promo.amazon.co.uk",
@@ -247,6 +282,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Don't miss today's top lightning deals on headphones, smart home devices, and charging stations. Limited stock available.",
         },
 
         // BOULANGER
@@ -260,6 +296,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Deuxième démarque des soldes chez Boulanger ! Électroménager, TV OLED et multimédia à prix cassés en magasin et sur boulanger.com.",
         },
         DemoItem {
             from: "service-client@commandes.boulanger.fr",
@@ -271,6 +308,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec!["recu_boulanger.pdf".to_string()],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Merci pour votre visite dans notre magasin Boulanger. Retrouvez votre ticket de caisse dématérialisé et les conditions de retour sous 15 jours.",
         },
 
         // LINKEDIN (Voluminous notifications)
@@ -284,6 +322,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Plusieurs personnes de votre réseau ont consulté votre profil cette semaine. Découvrez leurs activités et restez connecté.",
         },
         DemoItem {
             from: "messages@linkedin.com",
@@ -295,6 +334,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Un recruteur vous a envoyé un message direct concernant une opportunité de poste Lead Developer Rust / Tauri. Cliquez pour y répondre.",
         },
         DemoItem {
             from: "jobs@linkedin.com",
@@ -306,6 +346,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Découvrez 8 offres d'emploi récentes correspondant à vos critères de recherche Développeur Rust en télétravail ou hybride.",
         },
 
         // UBER (Flagged & recent items)
@@ -319,6 +360,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec!["uber_receipt.pdf".to_string()],
             is_flagged: false,
             folder: "INBOX",
+            body_snippet: "Merci d'avoir choisi Uber. Total de la course : 24,50 €. Prise en charge à Gare de Lyon et dépose à République. Facture téléchargeable.",
         },
         DemoItem {
             from: "receipts@uber.com",
@@ -330,6 +372,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec![],
             is_flagged: true,
             folder: "INBOX",
+            body_snippet: "Détail du pourboire de 5,00 € versé à votre chauffeur suite à votre trajet du 15 mai. Email marqué d'un drapeau pour note de frais.",
         },
 
         // OVHCLOUD (Protected contract)
@@ -343,6 +386,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             atts: vec!["contrat_ovh.pdf".to_string()],
             is_flagged: false,
             folder: "Achats/2023",
+            body_snippet: "Confirmation du renouvellement annuel automatique de vos domaines et services d'hébergement web OVHcloud. Contrat et bon de commande joints.",
         },
     ];
 
@@ -388,6 +432,7 @@ fn load_demo_data(state: State<AppState>) -> Result<AccountRecord, String> {
             attachment_names: item.atts.clone(),
             is_flagged: item.is_flagged,
             classification,
+            body_snippet: Some(item.body_snippet.to_string()),
         });
 
         mock_provider.add_email(
@@ -444,7 +489,8 @@ pub fn run() {
             get_emails_by_domain,
             execute_purge,
             empty_trash,
-            load_demo_data
+            load_demo_data,
+            update_email_classification
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

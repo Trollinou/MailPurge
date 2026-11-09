@@ -42,6 +42,7 @@ pub struct EmailRecord {
     pub attachment_names: Vec<String>,
     pub is_flagged: bool,
     pub classification: EmailClassification,
+    pub body_snippet: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +103,7 @@ impl MailStorageRepository {
                 attachment_names TEXT,
                 is_flagged BOOLEAN NOT NULL,
                 classification TEXT NOT NULL,
+                body_snippet TEXT,
                 PRIMARY KEY (account_id, folder_path, uid)
             );
 
@@ -163,8 +165,8 @@ impl MailStorageRepository {
                 INSERT INTO emails (
                     account_id, folder_path, uid, message_id, root_domain, full_domain,
                     sender_address, subject, received_at, size_bytes, has_unsubscribe,
-                    has_attachment, attachment_names, is_flagged, classification
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    has_attachment, attachment_names, is_flagged, classification, body_snippet
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                 ON CONFLICT(account_id, folder_path, uid) DO UPDATE SET
                     message_id = excluded.message_id,
                     root_domain = excluded.root_domain,
@@ -177,7 +179,8 @@ impl MailStorageRepository {
                     has_attachment = excluded.has_attachment,
                     attachment_names = excluded.attachment_names,
                     is_flagged = excluded.is_flagged,
-                    classification = excluded.classification
+                    classification = excluded.classification,
+                    body_snippet = excluded.body_snippet
                 "#,
             )?;
 
@@ -199,6 +202,7 @@ impl MailStorageRepository {
                     attachments_json,
                     email.is_flagged,
                     email.classification.as_str(),
+                    email.body_snippet,
                 ])?;
             }
         }
@@ -217,7 +221,7 @@ impl MailStorageRepository {
                 COALESCE(SUM(size_bytes), 0) as total_size,
                 COALESCE(SUM(CASE WHEN classification = 'PURGEABLE' THEN 1 ELSE 0 END), 0) as purgeable_count,
                 COALESCE(SUM(CASE WHEN classification = 'PURGEABLE' THEN size_bytes ELSE 0 END), 0) as purgeable_size,
-                COALESCE(SUM(CASE WHEN classification = 'PROTECTED_INVOICE' OR classification = 'PROTECTED_FLAGGED' THEN 1 ELSE 0 END), 0) as protected_count
+                COALESCE(SUM(CASE WHEN classification != 'PURGEABLE' THEN 1 ELSE 0 END), 0) as protected_count
             FROM emails
             WHERE account_id = ?1
             GROUP BY root_domain
@@ -260,7 +264,7 @@ impl MailStorageRepository {
             SELECT 
                 account_id, folder_path, uid, message_id, root_domain, full_domain,
                 sender_address, subject, received_at, size_bytes, has_unsubscribe,
-                has_attachment, attachment_names, is_flagged, classification
+                has_attachment, attachment_names, is_flagged, classification, body_snippet
             FROM emails
             WHERE account_id = ?1 AND root_domain = ?2
             ORDER BY received_at DESC
@@ -273,6 +277,7 @@ impl MailStorageRepository {
                 "PURGEABLE" => EmailClassification::Purgeable,
                 "PROTECTED_INVOICE" => EmailClassification::ProtectedInvoice,
                 "PROTECTED_FLAGGED" => EmailClassification::ProtectedFlagged,
+                "PROTECTED_USER" => EmailClassification::ProtectedUser,
                 "RECENT" => EmailClassification::Recent,
                 _ => EmailClassification::Purgeable,
             };
@@ -301,6 +306,7 @@ impl MailStorageRepository {
                 attachment_names,
                 is_flagged: row.get(13)?,
                 classification,
+                body_snippet: row.get(15)?,
             })
         })?;
 
@@ -309,6 +315,21 @@ impl MailStorageRepository {
             results.push(r?);
         }
         Ok(results)
+    }
+
+    pub fn update_email_classification(
+        &self,
+        account_id: i64,
+        folder_path: &str,
+        uid: u32,
+        new_classification: EmailClassification,
+    ) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE emails SET classification = ?1 WHERE account_id = ?2 AND folder_path = ?3 AND uid = ?4",
+            params![new_classification.as_str(), account_id, folder_path, uid],
+        )?;
+        Ok(())
     }
 
     pub fn delete_emails(

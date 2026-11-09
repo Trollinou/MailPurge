@@ -7,6 +7,7 @@ pub enum EmailClassification {
     Purgeable,
     ProtectedInvoice,
     ProtectedFlagged,
+    ProtectedUser,
     Recent,
 }
 
@@ -16,6 +17,7 @@ impl EmailClassification {
             Self::Purgeable => "PURGEABLE",
             Self::ProtectedInvoice => "PROTECTED_INVOICE",
             Self::ProtectedFlagged => "PROTECTED_FLAGGED",
+            Self::ProtectedUser => "PROTECTED_USER",
             Self::Recent => "RECENT",
         }
     }

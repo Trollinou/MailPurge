@@ -18,7 +18,10 @@ export type EmailClassification =
   | "PURGEABLE"
   | "PROTECTED_INVOICE"
   | "PROTECTED_FLAGGED"
+  | "PROTECTED_USER"
   | "RECENT";
+
+export type DomainSortOption = "size" | "count" | "alpha";
 
 export interface EmailRecord {
   account_id: number;
@@ -36,6 +39,7 @@ export interface EmailRecord {
   attachment_names: string[];
   is_flagged: boolean;
   classification: EmailClassification;
+  body_snippet?: string;
 }
 
 export interface PurgeReport {
