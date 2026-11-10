@@ -58,6 +58,7 @@ fn test_storage_account_and_email_lifecycle() {
             list_id: Some("<news.fnac.com>".to_string()),
             list_unsubscribe: Some("<https://news.fnac.com/unsub>".to_string()),
             list_unsubscribe_post: Some("List-Unsubscribe=One-Click".to_string()),
+            ..Default::default()
         },
         EmailRecord {
             account_id: 1,
@@ -79,6 +80,7 @@ fn test_storage_account_and_email_lifecycle() {
             list_id: None,
             list_unsubscribe: None,
             list_unsubscribe_post: None,
+            ..Default::default()
         },
         EmailRecord {
             account_id: 1,
@@ -100,6 +102,7 @@ fn test_storage_account_and_email_lifecycle() {
             list_id: Some("<promo.ldlc.com>".to_string()),
             list_unsubscribe: Some("<mailto:unsub@ldlc.com>".to_string()),
             list_unsubscribe_post: None,
+            ..Default::default()
         },
     ];
 
@@ -219,6 +222,7 @@ fn test_storage_account_and_email_lifecycle() {
         list_id: None,
         list_unsubscribe: None,
         list_unsubscribe_post: None,
+        ..Default::default()
     };
     storage.upsert_emails(&[unknown_email]).unwrap();
 
@@ -312,6 +316,7 @@ fn test_domain_stats_enhanced_and_spam_detection() {
             list_id: None,
             list_unsubscribe: None,
             list_unsubscribe_post: None,
+            ..Default::default()
         },
         EmailRecord {
             account_id: 1,
@@ -333,6 +338,7 @@ fn test_domain_stats_enhanced_and_spam_detection() {
             list_id: None,
             list_unsubscribe: None,
             list_unsubscribe_post: None,
+            ..Default::default()
         },
     ];
 

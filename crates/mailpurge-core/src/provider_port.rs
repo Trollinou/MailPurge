@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RawEmailEnvelope {
     pub uid: u32,
     pub message_id: Option<String>,
@@ -17,6 +17,14 @@ pub struct RawEmailEnvelope {
     pub list_id: Option<String>,
     pub list_unsubscribe: Option<String>,
     pub list_unsubscribe_post: Option<String>,
+    #[serde(default)]
+    pub return_path: Option<String>,
+    #[serde(default)]
+    pub authentication_results: Option<String>,
+    #[serde(default)]
+    pub spam_verdict_header: Option<String>,
+    #[serde(default)]
+    pub to_header: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

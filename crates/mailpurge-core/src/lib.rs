@@ -31,6 +31,8 @@ pub mod provider_port;
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
 pub mod purge_executor;
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
+pub mod spam_analyzer;
+#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
 pub mod storage;
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::nursery)]
 pub mod unsubscribe;

@@ -145,6 +145,7 @@ fn test_2_detect_transactional_keywords_case_and_accent_insensitive() {
             has_unsubscribe: false,
             attachment_names: &[],
             root_domain: None,
+            spam_verdict: None,
         };
         let classification = classify_email(&meta, &config, ref_time);
         assert_eq!(
@@ -171,6 +172,7 @@ fn test_3_protect_email_with_pdf_and_no_unsubscribe_even_ambiguous_subject() {
         has_unsubscribe: false,
         attachment_names: &["document_annexe.PDF".to_string()],
         root_domain: None,
+        spam_verdict: None,
     };
     let classification = classify_email(&meta, &config, ref_time);
     assert_eq!(
@@ -188,6 +190,7 @@ fn test_3_protect_email_with_pdf_and_no_unsubscribe_even_ambiguous_subject() {
         has_unsubscribe: true,
         attachment_names: &["catalogue.pdf".to_string()],
         root_domain: Some("fnac.com"),
+        spam_verdict: None,
     };
     let newsletter_class = classify_email(&newsletter_meta, &config, ref_time);
     assert_eq!(
@@ -211,6 +214,7 @@ fn test_protect_flagged_email() {
         has_unsubscribe: true,
         attachment_names: &[],
         root_domain: None,
+        spam_verdict: None,
     };
     let classification = classify_email(&meta, &config, ref_time);
     assert_eq!(
@@ -258,6 +262,7 @@ fn test_recent_email_classification() {
         has_unsubscribe: true,
         attachment_names: &[],
         root_domain: None,
+        spam_verdict: None,
     };
     let classification = classify_email(&meta, &config, ref_time);
     assert_eq!(
@@ -282,6 +287,7 @@ fn test_personal_domain_protection() {
         has_unsubscribe: false,
         attachment_names: &[],
         root_domain: Some("orange.fr"),
+        spam_verdict: None,
     };
     assert_eq!(
         classify_email(&orange_meta, &config, ref_time),
@@ -298,6 +304,7 @@ fn test_personal_domain_protection() {
         has_unsubscribe: false,
         attachment_names: &[],
         root_domain: Some("gmail.com"),
+        spam_verdict: None,
     };
     assert_eq!(
         classify_email(&gmail_meta, &config, ref_time),
@@ -325,6 +332,7 @@ fn test_custom_classifier_config() {
         has_unsubscribe: false,
         attachment_names: &[],
         root_domain: None,
+        spam_verdict: None,
     };
     assert_eq!(
         classify_email(&meta_kw, &custom_config, ref_time),
@@ -340,6 +348,7 @@ fn test_custom_classifier_config() {
         has_unsubscribe: false,
         attachment_names: &["sources.zip".to_string()],
         root_domain: None,
+        spam_verdict: None,
     };
     assert_eq!(
         classify_email(&meta_att, &custom_config, ref_time),
@@ -378,4 +387,73 @@ fn test_4_imap_sequence_formatting_and_chunking() {
     // Chunk size 1
     let unit_chunks = chunk_sequence_set(&[5, 6, 7], 1);
     assert_eq!(unit_chunks, vec!["5", "6", "7"]);
+}
+
+#[test]
+fn test_fake_invoice_with_hard_spam_signals_revokes_protection() {
+    use mailpurge_core::domain::orphan_spam::SpamVerdictDetail;
+
+    let config = ClassifierConfig::default();
+    let ref_time = 1_700_000_000i64;
+    let old_time = ref_time - (90 * 86400);
+
+    // 1. Fake invoice on dead domain -> Purgeable
+    let dead_verdict = SpamVerdictDetail {
+        is_dead_domain: true,
+        ..Default::default()
+    };
+    let meta_dead = EmailMetadataInput {
+        uid: 501,
+        subject: "Votre facture impayée",
+        received_at_timestamp: old_time,
+        is_flagged: false,
+        has_unsubscribe: false,
+        attachment_names: &["facture.pdf".to_string()],
+        root_domain: Some("dead-spammer.com"),
+        spam_verdict: Some(&dead_verdict),
+    };
+    assert_eq!(
+        classify_email(&meta_dead, &config, ref_time),
+        EmailClassification::Purgeable,
+        "Dead domain with invoice keyword or PDF must NOT be protected"
+    );
+
+    // 2. Fake invoice with SPF failure -> Purgeable
+    let spf_fail_verdict = SpamVerdictDetail {
+        spf_fail: true,
+        ..Default::default()
+    };
+    let meta_spf = EmailMetadataInput {
+        uid: 502,
+        subject: "Reçu de votre commande #8921",
+        received_at_timestamp: old_time,
+        is_flagged: false,
+        has_unsubscribe: false,
+        attachment_names: &[],
+        root_domain: Some("phishing-store.com"),
+        spam_verdict: Some(&spf_fail_verdict),
+    };
+    assert_eq!(
+        classify_email(&meta_spf, &config, ref_time),
+        EmailClassification::Purgeable,
+        "SPF fail with invoice keyword must NOT be protected"
+    );
+
+    // 3. Genuine invoice without spam signals -> ProtectedInvoice
+    let legit_verdict = SpamVerdictDetail::default();
+    let meta_legit = EmailMetadataInput {
+        uid: 503,
+        subject: "Votre facture #4892",
+        received_at_timestamp: old_time,
+        is_flagged: false,
+        has_unsubscribe: false,
+        attachment_names: &["facture.pdf".to_string()],
+        root_domain: Some("amazon.fr"),
+        spam_verdict: Some(&legit_verdict),
+    };
+    assert_eq!(
+        classify_email(&meta_legit, &config, ref_time),
+        EmailClassification::ProtectedInvoice,
+        "Legitimate invoice without spam signals must remain ProtectedInvoice"
+    );
 }

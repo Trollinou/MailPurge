@@ -259,3 +259,32 @@ fn test_extract_body_preview_html() {
     assert!(!preview_qp.contains("<!DOCTYPE"));
     assert!(!preview_qp.contains("<html"));
 }
+
+#[test]
+fn test_parse_raw_headers_extended_spam_and_auth() {
+    let raw = b"From: spoofed@brand.com\r\n\
+                To: victim@domain.com\r\n\
+                Return-Path: <bounce@compromised-server.net>\r\n\
+                Authentication-Results: mx.google.com; spf=fail (google.com: domain does not designate 1.2.3.4 as permitted sender)\r\n\
+                X-Spam-Flag: YES\r\n\
+                X-Spam-Status: Yes, score=6.5\r\n\
+                X-Forefront-Antispam-Report: SCL:9;CAT:SPM\r\n\
+                Subject: Important invoice\r\n\r\n";
+
+    let headers = parse_raw_headers(raw);
+    assert_eq!(headers.from, "spoofed@brand.com");
+    assert_eq!(headers.to_header, Some("victim@domain.com".to_string()));
+    assert_eq!(
+        headers.return_path,
+        Some("<bounce@compromised-server.net>".to_string())
+    );
+    assert!(headers
+        .authentication_results
+        .as_ref()
+        .unwrap()
+        .contains("spf=fail"));
+    let spam = headers.spam_verdict_header.unwrap();
+    assert!(spam.contains("X-Spam-Flag: YES"));
+    assert!(spam.contains("X-Spam-Status: Yes, score=6.5"));
+    assert!(spam.contains("X-Forefront-Antispam-Report: SCL:9;CAT:SPM"));
+}

@@ -133,6 +133,10 @@ pub struct ParsedHeaders {
     pub list_id: Option<String>,
     pub list_unsubscribe: Option<String>,
     pub list_unsubscribe_post: Option<String>,
+    pub return_path: Option<String>,
+    pub authentication_results: Option<String>,
+    pub spam_verdict_header: Option<String>,
+    pub to_header: Option<String>,
 }
 
 /// Parses raw header bytes into `ParsedHeaders` using RFC 2047 decoding.
@@ -240,6 +244,62 @@ pub fn parse_raw_headers(header_bytes: &[u8]) -> ParsedHeaders {
                 result.list_unsubscribe_post = Some(trimmed.to_string());
             }
         }
+
+        // Return-Path (Bounce address)
+        if let Some(rp) = msg
+            .header_raw("Return-Path")
+            .or_else(|| msg.header_raw("return-path"))
+        {
+            let trimmed = rp.trim();
+            if !trimmed.is_empty() {
+                result.return_path = Some(trimmed.to_string());
+            }
+        }
+
+        // To recipients
+        if let Some(to) = msg.to() {
+            let addrs: Vec<String> = to
+                .iter()
+                .filter_map(|addr| addr.address.as_ref().map(|s| s.to_string()))
+                .collect();
+            if !addrs.is_empty() {
+                result.to_header = Some(addrs.join(", "));
+            }
+        } else if let Some(to_raw) = msg.header_raw("To").or_else(|| msg.header_raw("to")) {
+            let trimmed = to_raw.trim();
+            if !trimmed.is_empty() {
+                result.to_header = Some(trimmed.to_string());
+            }
+        }
+
+        // Authentication-Results
+        if let Some(ar) = msg
+            .header_raw("Authentication-Results")
+            .or_else(|| msg.header_raw("authentication-results"))
+        {
+            let trimmed = ar.trim();
+            if !trimmed.is_empty() {
+                result.authentication_results = Some(trimmed.to_string());
+            }
+        }
+
+        // Spam verdict headers (X-Spam-Status, X-Spam-Flag, X-Forefront-Antispam-Report, X-Rspamd-Result)
+        let mut spam_parts = Vec::new();
+        if let Some(val) = msg.header_raw("X-Spam-Status") {
+            spam_parts.push(format!("X-Spam-Status: {}", val.trim()));
+        }
+        if let Some(val) = msg.header_raw("X-Spam-Flag") {
+            spam_parts.push(format!("X-Spam-Flag: {}", val.trim()));
+        }
+        if let Some(val) = msg.header_raw("X-Forefront-Antispam-Report") {
+            spam_parts.push(format!("X-Forefront-Antispam-Report: {}", val.trim()));
+        }
+        if let Some(val) = msg.header_raw("X-Rspamd-Result") {
+            spam_parts.push(format!("X-Rspamd-Result: {}", val.trim()));
+        }
+        if !spam_parts.is_empty() {
+            result.spam_verdict_header = Some(spam_parts.join("; "));
+        }
     }
 
     result
@@ -278,6 +338,10 @@ pub fn parse_fetch_to_envelope(fetch: &async_imap::types::Fetch) -> Option<RawEm
         list_id: parsed_headers.list_id,
         list_unsubscribe: parsed_headers.list_unsubscribe,
         list_unsubscribe_post: parsed_headers.list_unsubscribe_post,
+        return_path: parsed_headers.return_path,
+        authentication_results: parsed_headers.authentication_results,
+        spam_verdict_header: parsed_headers.spam_verdict_header,
+        to_header: parsed_headers.to_header,
     })
 }
 
@@ -684,7 +748,7 @@ impl MailProviderPort for ImapProvider {
             let stream = session
                 .uid_fetch(
                     "1:*",
-                    "(UID RFC822.SIZE FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Subject From Sender Reply-To Date Message-ID List-ID List-Unsubscribe List-Unsubscribe-Post)])",
+                    "(UID RFC822.SIZE FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Subject From To Sender Reply-To Return-Path Date Message-ID List-ID List-Unsubscribe List-Unsubscribe-Post Authentication-Results X-Spam-Status X-Spam-Flag X-Forefront-Antispam-Report X-Rspamd-Result X-OVH-Tracer-Id)])",
                 )
                 .await
                 .map_err(map_async_imap_error)?;
@@ -738,7 +802,7 @@ impl MailProviderPort for ImapProvider {
             let stream = session
                 .fetch(
                     &seq_range,
-                    "(UID RFC822.SIZE FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Subject From Sender Reply-To Date Message-ID List-ID List-Unsubscribe List-Unsubscribe-Post)])",
+                    "(UID RFC822.SIZE FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Subject From To Sender Reply-To Return-Path Date Message-ID List-ID List-Unsubscribe List-Unsubscribe-Post Authentication-Results X-Spam-Status X-Spam-Flag X-Forefront-Antispam-Report X-Rspamd-Result X-OVH-Tracer-Id)])",
                 )
                 .await
                 .map_err(map_async_imap_error)?;

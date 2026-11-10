@@ -58,6 +58,7 @@ async fn test_7_never_purge_protected_or_recent_emails() {
                 list_id: None,
                 list_unsubscribe: None,
                 list_unsubscribe_post: None,
+                ..Default::default()
             },
         );
     }
@@ -117,6 +118,7 @@ async fn test_8_batch_chunking_with_limit_500() {
                 list_id: None,
                 list_unsubscribe: None,
                 list_unsubscribe_post: None,
+                ..Default::default()
             },
         );
     }
@@ -165,6 +167,7 @@ async fn test_dry_run_mode_leaves_server_untouched() {
             list_id: None,
             list_unsubscribe: None,
             list_unsubscribe_post: None,
+            ..Default::default()
         },
     );
 

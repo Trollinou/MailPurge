@@ -19,6 +19,7 @@ export interface DomainStats {
   last_received_at?: number;
   list_count?: number;
   is_suspicious_spam?: boolean;
+  orphan_category?: string | null;
 }
 
 export type EmailClassification =
@@ -88,4 +89,57 @@ export interface ScanProgressEvent {
   total: number;
   phase: "discovering" | "scanning" | "completed" | "error" | string;
   message?: string;
+}
+
+export type OrphanCategory =
+  | "DEAD_DOMAIN"
+  | "SERVER_SPAM"
+  | "STRUCTURAL_ANOMALY"
+  | "DISPOSABLE";
+
+export interface OrphanCategoryGroup {
+  category: OrphanCategory;
+  label: string;
+  description: string;
+  domain_count: number;
+  email_count: number;
+  total_size: number;
+  domains: string[];
+}
+
+export interface OrphanSummaryReport {
+  threshold: number;
+  account_id: number | null;
+  total_domains: number;
+  total_emails: number;
+  total_size: number;
+  dns_analyzed_count: number;
+  dns_pending_count: number;
+  groups: OrphanCategoryGroup[];
+}
+
+export interface EspWhitelistEntry {
+  root_domain: string;
+  provider_name: string;
+  is_builtin: boolean;
+  is_user_added: boolean;
+  is_enabled: boolean;
+  updated_at: number;
+}
+
+export interface SuspiciousTldEntry {
+  tld: string;
+  risk_level: string;
+  is_builtin: boolean;
+  is_enabled: boolean;
+  updated_at: number;
+}
+
+export interface CommunityRulesUpdateReport {
+  esp_updated_count: number;
+  tlds_updated_count: number;
+  disposable_updated_count: number;
+  total_rules_count: number;
+  last_updated_at: number;
+  status_message: string;
 }

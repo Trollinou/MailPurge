@@ -49,6 +49,46 @@ pub async fn execute_sync(
         .await
         .map_err(|e| format!("Erreur liste des dossiers: {e}"))?;
 
+    // Harvest trusted recipient domains from Sent folder (implicit whitelist)
+    if let Some(sent_folder) = folders.iter().find(|f| f.is_sent()) {
+        if let Ok(sent_count) = provider.get_folder_message_count(&sent_folder.path).await {
+            if sent_count > 0 {
+                let start_seq = sent_count.saturating_sub(200).max(1);
+                if let Ok(sent_envelopes) = provider
+                    .fetch_envelopes_range(&sent_folder.path, start_seq, sent_count)
+                    .await
+                {
+                    let mut trusted_domains = HashSet::new();
+                    for env in sent_envelopes {
+                        if let Some(to) = env.to_header {
+                            for recipient in to.split(',') {
+                                if let Ok(extracted) = extract_sender_domain(recipient.trim()) {
+                                    if !extracted.root_domain.is_empty()
+                                        && extracted.root_domain != "unknown"
+                                    {
+                                        trusted_domains.insert(extracted.root_domain);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !trusted_domains.is_empty() {
+                        let domain_list: Vec<String> = trusted_domains.into_iter().collect();
+                        let _ = storage.add_user_trusted_domains(
+                            account_id,
+                            &domain_list,
+                            "sent_folder",
+                        );
+                        eprintln!(
+                            "[SyncEngine] Récolté {} domaines légitimes de confiance depuis le dossier Éléments envoyés",
+                            domain_list.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     let scannable_folders: Vec<_> = folders.into_iter().filter(|f| f.is_scannable()).collect();
     let classifier_config = ClassifierConfig::default();
     let now = chrono::Utc::now().timestamp();
@@ -172,6 +212,7 @@ pub async fn execute_sync(
                         has_unsubscribe: env.has_unsubscribe,
                         attachment_names: &env.attachment_names,
                         root_domain: Some(&root_domain),
+                        spam_verdict: None,
                     },
                     &classifier_config,
                     now,
@@ -197,6 +238,10 @@ pub async fn execute_sync(
                     list_id: env.list_id,
                     list_unsubscribe: env.list_unsubscribe,
                     list_unsubscribe_post: env.list_unsubscribe_post,
+                    return_path: env.return_path,
+                    auth_results: env.authentication_results,
+                    spam_headers: env.spam_verdict_header,
+                    to_recipients: env.to_header,
                 });
             }
 

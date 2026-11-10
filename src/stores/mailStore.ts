@@ -3,12 +3,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AccountRecord,
+  CommunityRulesUpdateReport,
   DistributionListGroup,
   DomainSortOption,
   DomainStats,
   EmailRecord,
+  EspWhitelistEntry,
+  OrphanSummaryReport,
   PurgeReport,
   ScanProgressEvent,
+  SuspiciousTldEntry,
   UnsubscribeReport,
 } from "../types";
 
@@ -30,11 +34,21 @@ export const useMailStore = defineStore("mail", {
     activeTab: "purgeable" as "purgeable" | "subscriptions" | "protected",
     searchQuery: "",
     sortBy: "size" as DomainSortOption,
+    selectedTags: [] as string[],
     previewedEmail: null as EmailRecord | null,
     previewLoading: false,
     previewError: null as string | null,
     lastReport: null as PurgeReport | null,
     statusMessage: "" as string,
+    orphanThreshold: 3 as number,
+    orphanScope: "current" as "current" | "all",
+    orphanSummary: null as OrphanSummaryReport | null,
+    isOrphanAnalyzing: false,
+    isOrphanPurging: false,
+    communityRulesStatus: null as CommunityRulesUpdateReport | null,
+    espWhitelist: [] as EspWhitelistEntry[],
+    suspiciousTlds: [] as SuspiciousTldEntry[],
+    isCommunityUpdating: false,
   }),
 
   getters: {
@@ -49,6 +63,44 @@ export const useMailStore = defineStore("mail", {
       let list = state.domainStats;
       if (q) {
         list = list.filter((d) => d.root_domain.toLowerCase().includes(q));
+      }
+
+      if (state.selectedTags.length > 0) {
+        list = list.filter((d) => {
+          return state.selectedTags.some((tag) => {
+            if (tag === "DEAD_DOMAIN") {
+              return d.orphan_category === "DEAD_DOMAIN";
+            }
+            if (tag === "SERVER_SPAM") {
+              return (
+                d.orphan_category === "SERVER_SPAM" ||
+                d.orphan_category === "SERVER_SPAM_VERDICT"
+              );
+            }
+            if (tag === "STRUCTURAL_ANOMALY") {
+              return d.orphan_category === "STRUCTURAL_ANOMALY";
+            }
+            if (tag === "DISPOSABLE") {
+              return (
+                d.orphan_category === "DISPOSABLE" ||
+                d.orphan_category === "DISPOSABLE_DOMAIN"
+              );
+            }
+            if (tag === "ALL_ORPHANS") {
+              return Boolean(d.orphan_category);
+            }
+            if (tag === "PROTECTED") {
+              return d.protected_count > 0;
+            }
+            if (tag === "SPAM_SUSPECT") {
+              return Boolean(d.is_suspicious_spam);
+            }
+            if (tag === "PERSONAL") {
+              return Boolean(d.is_personal_domain);
+            }
+            return false;
+          });
+        });
       }
 
       const sorted = [...list];
@@ -626,6 +678,178 @@ export const useMailStore = defineStore("mail", {
         throw err;
       } finally {
         this.isPurging = false;
+      }
+    },
+
+    async fetchOrphanSummary(scope?: "current" | "all", threshold?: number) {
+      if (scope) this.orphanScope = scope;
+      if (threshold !== undefined) this.orphanThreshold = threshold;
+      const accountId = this.orphanScope === "all" ? null : this.currentAccountId;
+      try {
+        this.orphanSummary = await invoke<OrphanSummaryReport>("get_orphan_summary", {
+          accountId,
+          threshold: this.orphanThreshold,
+        });
+      } catch (err) {
+        this.statusMessage = "Erreur chargement orphelins: " + String(err);
+      }
+    },
+
+    async analyzeOrphanDns(scope?: "current" | "all", threshold?: number) {
+      if (scope) this.orphanScope = scope;
+      if (threshold !== undefined) this.orphanThreshold = threshold;
+      const accountId = this.orphanScope === "all" ? null : this.currentAccountId;
+      try {
+        this.isOrphanAnalyzing = true;
+        this.statusMessage = "Analyse DNS asynchrone des domaines orphelins en cours...";
+        this.orphanSummary = await invoke<OrphanSummaryReport>("analyze_orphan_dns", {
+          accountId,
+          threshold: this.orphanThreshold,
+        });
+        this.statusMessage = `Analyse DNS terminée : ${this.orphanSummary.dns_analyzed_count} domaine(s) analysés et mémorisés en cache partagé.`;
+      } catch (err) {
+        this.statusMessage = "Erreur analyse DNS orphelins: " + String(err);
+      } finally {
+        this.isOrphanAnalyzing = false;
+      }
+    },
+
+    async purgeOrphanGroup(
+      category?: string | null,
+      scope?: "current" | "all",
+      dryRun?: boolean
+    ) {
+      const activeScope = scope ?? this.orphanScope;
+      const accountId = activeScope === "all" ? null : this.currentAccountId;
+      const isDry = dryRun ?? this.dryRunEnabled;
+      try {
+        this.isOrphanPurging = true;
+        const report = await invoke<PurgeReport>("purge_orphan_group", {
+          accountId,
+          category: category ?? null,
+          threshold: this.orphanThreshold,
+          dryRun: isDry,
+        });
+
+        this.lastReport = report;
+        if (!isDry) {
+          this.statusMessage = `Purge orphelins terminée : ${report.purged_count} emails déplacés vers la corbeille (${formatBytes(report.purged_bytes)}).`;
+          await this.refreshDomainStats();
+          await this.fetchOrphanSummary(activeScope, this.orphanThreshold);
+        } else {
+          this.statusMessage = `[Simulation] Purge orphelins : ${report.purged_count} emails éligibles (${formatBytes(report.purged_bytes)}). Aucun email déplacé.`;
+        }
+        return report;
+      } catch (err) {
+        this.statusMessage = "Erreur purge orphelins: " + String(err);
+        throw err;
+      } finally {
+        this.isOrphanPurging = false;
+      }
+    },
+
+    async tagOrphanGroup(category?: string | null, scope?: "current" | "all") {
+      const activeScope = scope ?? this.orphanScope;
+      const accountId = activeScope === "all" ? null : this.currentAccountId;
+      try {
+        const count = await invoke<number>("tag_orphan_group", {
+          accountId,
+          category: category ?? null,
+          threshold: this.orphanThreshold,
+        });
+        await this.refreshDomainStats();
+        return count;
+      } catch (err) {
+        this.statusMessage = "Erreur marquage orphelins: " + String(err);
+        throw err;
+      }
+    },
+
+    async unmarkOrphanDomain(rootDomain: string, addToWhitelist = true) {
+      if (!this.currentAccountId) return;
+      try {
+        await invoke("unmark_orphan_domain", {
+          accountId: this.currentAccountId,
+          rootDomain,
+          addToWhitelist,
+        });
+        const target = this.domainStats.find((d) => d.root_domain === rootDomain);
+        if (target) {
+          target.orphan_category = null;
+        }
+        this.statusMessage = addToWhitelist
+          ? `Le domaine ${rootDomain} a été retiré des alertes et ajouté à votre liste de confiance.`
+          : `Le domaine ${rootDomain} a été dé-marqué.`;
+      } catch (err) {
+        this.statusMessage = "Erreur dé-marquage domaine: " + String(err);
+        throw err;
+      }
+    },
+
+    async fetchCommunityRules() {
+      try {
+        const [status, esps, tlds] = await Promise.all([
+          invoke<CommunityRulesUpdateReport>("get_community_rules_status"),
+          invoke<EspWhitelistEntry[]>("get_esp_whitelist"),
+          invoke<SuspiciousTldEntry[]>("get_suspicious_tlds"),
+        ]);
+        this.communityRulesStatus = status;
+        this.espWhitelist = esps;
+        this.suspiciousTlds = tlds;
+      } catch (err) {
+        this.statusMessage = "Erreur chargement règles communautaires: " + String(err);
+      }
+    },
+
+    async toggleEsp(rootDomain: string, enabled: boolean) {
+      try {
+        await invoke("toggle_esp_whitelist_entry", { rootDomain, enabled });
+        const item = this.espWhitelist.find((e) => e.root_domain === rootDomain);
+        if (item) item.is_enabled = enabled;
+      } catch (err) {
+        this.statusMessage = "Erreur activation/désactivation ESP: " + String(err);
+      }
+    },
+
+    async addCustomEsp(rootDomain: string, providerName: string) {
+      try {
+        const entry: EspWhitelistEntry = {
+          root_domain: rootDomain.trim().toLowerCase(),
+          provider_name: providerName.trim(),
+          is_builtin: false,
+          is_user_added: true,
+          is_enabled: true,
+          updated_at: Math.floor(Date.now() / 1000),
+        };
+        await invoke("update_esp_whitelist_entry", { entry });
+        await this.fetchCommunityRules();
+      } catch (err) {
+        this.statusMessage = "Erreur ajout ESP personnalisé: " + String(err);
+      }
+    },
+
+    async toggleTld(tld: string, enabled: boolean) {
+      try {
+        await invoke("toggle_suspicious_tld_entry", { tld, enabled });
+        const item = this.suspiciousTlds.find((t) => t.tld === tld);
+        if (item) item.is_enabled = enabled;
+      } catch (err) {
+        this.statusMessage = "Erreur activation/désactivation TLD: " + String(err);
+      }
+    },
+
+    async updateAllCommunityRules() {
+      try {
+        this.isCommunityUpdating = true;
+        this.statusMessage = "Téléchargement et synchronisation globale des listes communautaires...";
+        const report = await invoke<CommunityRulesUpdateReport>("update_all_community_rules");
+        this.communityRulesStatus = report;
+        this.statusMessage = report.status_message;
+        await this.fetchCommunityRules();
+      } catch (err) {
+        this.statusMessage = "Erreur mise à jour règles communautaires: " + String(err);
+      } finally {
+        this.isCommunityUpdating = false;
       }
     },
   },

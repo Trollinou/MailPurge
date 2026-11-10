@@ -3,6 +3,8 @@ import { onMounted, ref } from "vue";
 import { useMailStore, formatBytes } from "./stores/mailStore";
 import AddAccountModal from "./components/AddAccountModal.vue";
 import EditAccountModal from "./components/EditAccountModal.vue";
+import OrphanSpamModal from "./components/OrphanSpamModal.vue";
+import SpamRulesSettingsModal from "./components/SpamRulesSettingsModal.vue";
 import type { AccountRecord, DomainStats } from "./types";
 import {
   Mail,
@@ -36,12 +38,35 @@ import {
   Loader2,
   KeyRound,
   Edit3,
+  Target,
+  Filter,
+  ChevronDown,
+  Skull,
+  Flame,
+  Bookmark,
 } from "lucide-vue-next";
 
 const store = useMailStore();
 const isAddAccountModalOpen = ref(false);
 const isEditAccountModalOpen = ref(false);
 const accountToEdit = ref<AccountRecord | null>(null);
+
+const isOrphanSpamModalOpen = ref(false);
+const isSpamRulesModalOpen = ref(false);
+const isTagFilterOpen = ref(false);
+
+function openOrphanSpamModal() {
+  isOrphanSpamModalOpen.value = true;
+  store.fetchOrphanSummary(store.orphanScope, store.orphanThreshold);
+}
+
+async function unmarkDomainWithFeedback(rootDomain: string) {
+  try {
+    await store.unmarkOrphanDomain(rootDomain, true);
+  } catch (e) {
+    console.error("Failed to unmark domain", e);
+  }
+}
 
 const isPasswordModalOpen = ref(false);
 const newPassword = ref("");
@@ -131,6 +156,7 @@ async function handlePasswordSubmit() {
 onMounted(async () => {
   await store.initSyncListener();
   await store.fetchAccounts();
+  await store.fetchCommunityRules();
 });
 
 function formatDate(ts: number): string {
@@ -364,6 +390,19 @@ function formatRelativeDate(ts: number): string {
       <!-- Footer Gauche : Bouton Vider la Corbeille -->
       <div class="p-3 border-t border-slate-800 space-y-2">
         <button
+          @click="openOrphanSpamModal"
+          class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-rose-950/60 to-purple-950/60 hover:from-rose-900/60 hover:to-purple-900/60 text-rose-200 border border-rose-500/30 flex items-center justify-between text-xs font-semibold shadow-sm transition group"
+        >
+          <div class="flex items-center gap-2">
+            <Target class="w-4 h-4 text-rose-400 group-hover:scale-110 transition-transform" />
+            <span>Chasse aux Orphelins</span>
+          </div>
+          <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-rose-500/20 text-rose-300 font-mono border border-rose-500/30">
+            Spams
+          </span>
+        </button>
+
+        <button
           @click="store.emptyTrash"
           :disabled="store.isPurging || !store.currentAccountId"
           class="w-full py-2 px-3 rounded-lg bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 border border-rose-800/50 hover:border-rose-700 flex items-center justify-center space-x-2 text-xs transition disabled:opacity-50"
@@ -390,56 +429,92 @@ function formatRelativeDate(ts: number): string {
         </div>
 
         <div class="flex items-center space-x-2.5">
-          <!-- Tri par options -->
-          <div class="flex items-center bg-slate-900 border border-slate-700/60 rounded-lg p-0.5 text-xs">
-            <button
-              @click="store.sortBy = 'size'"
-              :class="[
-                'px-2.5 py-1 rounded transition text-xs font-medium',
-                store.sortBy === 'size'
-                  ? 'bg-indigo-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              ]"
-              title="Trier par volume purgeable décroissant"
+          <!-- Tri Dropdown -->
+          <div class="relative">
+            <select
+              v-model="store.sortBy"
+              class="bg-slate-900 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer font-medium"
+              title="Critère de tri des domaines"
             >
-              Volume
-            </button>
+              <option value="size">Trier : Volume (Octets)</option>
+              <option value="count">Trier : Nb Mails</option>
+              <option value="alpha">Trier : Nom (A-Z)</option>
+              <option value="date">Trier : Plus Récent</option>
+            </select>
+          </div>
+
+          <!-- Filtre par Tags Dropdown -->
+          <div class="relative">
             <button
-              @click="store.sortBy = 'count'"
+              @click="isTagFilterOpen = !isTagFilterOpen"
               :class="[
-                'px-2.5 py-1 rounded transition text-xs font-medium',
-                store.sortBy === 'count'
-                  ? 'bg-indigo-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
+                'flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition font-medium',
+                store.selectedTags.length > 0
+                  ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/40 shadow-sm'
+                  : 'bg-slate-900 text-slate-400 border-slate-700/60 hover:text-slate-200'
               ]"
-              title="Trier par nombre total de mails"
+              title="Filtrer les domaines par étiquettes et alertes"
             >
-              Nb Mails
+              <Filter class="w-3.5 h-3.5" />
+              <span>Tags</span>
+              <span
+                v-if="store.selectedTags.length > 0"
+                class="px-1.5 py-0.2 rounded-full bg-indigo-600 text-white text-[10px] font-bold"
+              >
+                {{ store.selectedTags.length }}
+              </span>
+              <ChevronDown class="w-3 h-3 text-slate-400" />
             </button>
-            <button
-              @click="store.sortBy = 'alpha'"
-              :class="[
-                'px-2.5 py-1 rounded transition text-xs font-medium',
-                store.sortBy === 'alpha'
-                  ? 'bg-indigo-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              ]"
-              title="Trier par ordre alphabétique"
+
+            <!-- Dropdown popover with tag checkboxes -->
+            <div
+              v-if="isTagFilterOpen"
+              class="absolute right-0 mt-1.5 w-64 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-30 p-2.5 space-y-1 text-xs"
             >
-              A-Z
-            </button>
-            <button
-              @click="store.sortBy = 'date'"
-              :class="[
-                'px-2.5 py-1 rounded transition text-xs font-medium',
-                store.sortBy === 'date'
-                  ? 'bg-indigo-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              ]"
-              title="Trier par date du dernier email reçu"
-            >
-              Date
-            </button>
+              <div class="flex items-center justify-between pb-1.5 mb-1 border-b border-slate-800 px-1 text-slate-400 font-semibold text-[11px]">
+                <span>Filtrer par tags</span>
+                <button
+                  v-if="store.selectedTags.length > 0"
+                  @click="store.selectedTags = []"
+                  class="text-indigo-400 hover:text-indigo-300 text-[10px]"
+                >
+                  Effacer tout
+                </button>
+              </div>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="ALL_ORPHANS" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>🎯 Tous les orphelins marqués</span>
+              </label>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="DEAD_DOMAIN" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>💀 Domaine Mort (NXDOMAIN)</span>
+              </label>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="SERVER_SPAM" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>🛡️ Échec Auth / Rejet Serveur</span>
+              </label>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="STRUCTURAL_ANOMALY" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>⚠️ Anomalie Expéditeur / TLD</span>
+              </label>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="DISPOSABLE" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>🚫 Domaine Jetable (Burner)</span>
+              </label>
+              <div class="border-t border-slate-800 my-1"></div>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="PROTECTED" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>🔒 Avec emails protégés</span>
+              </label>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="SPAM_SUSPECT" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>⚠️ Spam suspect</span>
+              </label>
+              <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 cursor-pointer text-slate-200">
+                <input type="checkbox" value="PERSONAL" v-model="store.selectedTags" class="rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                <span>👤 Messagerie Personnelle</span>
+              </label>
+            </div>
           </div>
 
           <!-- Barre de Recherche -->
@@ -452,6 +527,16 @@ function formatRelativeDate(ts: number): string {
               class="w-full bg-slate-900 border border-slate-700/60 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
           </div>
+
+          <!-- Bouton Chasse aux Orphelins -->
+          <button
+            @click="openOrphanSpamModal"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 transition-colors shadow-sm shrink-0"
+            title="Analyser et purger les domaines éphémères (longue traîne)"
+          >
+            <Target class="w-3.5 h-3.5 text-rose-400" />
+            <span>Chasse aux Orphelins</span>
+          </button>
         </div>
       </header>
 
@@ -599,6 +684,36 @@ function formatRelativeDate(ts: number): string {
                   <AlertTriangle class="w-3 h-3 text-amber-400" />
                   <span>Spam suspect</span>
                 </span>
+                <span
+                  v-if="domain.orphan_category"
+                  :class="[
+                    'px-1.5 py-0.5 rounded text-[10px] font-medium border flex items-center space-x-1 shrink-0',
+                    domain.orphan_category === 'DEAD_DOMAIN'
+                      ? 'bg-slate-800 text-slate-300 border-slate-600'
+                      : domain.orphan_category === 'SERVER_SPAM' || domain.orphan_category === 'SERVER_SPAM_VERDICT'
+                        ? 'bg-rose-950/80 text-rose-300 border-rose-800/60'
+                        : domain.orphan_category === 'STRUCTURAL_ANOMALY'
+                          ? 'bg-amber-950/80 text-amber-300 border-amber-800/60'
+                          : 'bg-orange-950/80 text-orange-300 border-orange-800/60'
+                  ]"
+                  :title="'Catégorie orphelin : ' + domain.orphan_category"
+                >
+                  <Skull v-if="domain.orphan_category === 'DEAD_DOMAIN'" class="w-3 h-3 text-slate-400" />
+                  <ShieldAlert v-else-if="domain.orphan_category === 'SERVER_SPAM' || domain.orphan_category === 'SERVER_SPAM_VERDICT'" class="w-3 h-3 text-rose-400" />
+                  <AlertTriangle v-else-if="domain.orphan_category === 'STRUCTURAL_ANOMALY'" class="w-3 h-3 text-amber-400" />
+                  <Flame v-else class="w-3 h-3 text-orange-400" />
+                  <span>
+                    {{
+                      domain.orphan_category === 'DEAD_DOMAIN'
+                        ? '💀 Domaine Mort'
+                        : domain.orphan_category === 'SERVER_SPAM' || domain.orphan_category === 'SERVER_SPAM_VERDICT'
+                          ? '🛡️ Rejet Auth'
+                          : domain.orphan_category === 'STRUCTURAL_ANOMALY'
+                            ? '⚠️ Anomalie'
+                            : '🚫 Jetable'
+                    }}
+                  </span>
+                </span>
                 <span class="text-[11px] text-slate-500">({{ domain.total_emails }} mails)</span>
               </div>
               <div class="flex items-center space-x-2 text-xs mt-1">
@@ -632,6 +747,17 @@ function formatRelativeDate(ts: number): string {
               <ShieldCheck class="w-3.5 h-3.5" />
               <span>{{ domain.protected_count }} protégé{{ domain.protected_count > 1 ? 's' : '' }}</span>
             </div>
+
+            <!-- Action Dé-taguer / Faire Confiance -->
+            <button
+              v-if="domain.orphan_category"
+              @click.stop="unmarkDomainWithFeedback(domain.root_domain)"
+              class="flex items-center space-x-1 px-2 py-1 rounded-lg text-xs font-medium text-emerald-300 bg-emerald-950/40 hover:bg-emerald-900/50 border border-emerald-800/40 transition shrink-0"
+              title="Retirer l'alerte et marquer ce domaine comme de confiance (ne sera plus classé en spam)"
+            >
+              <ShieldCheck class="w-3.5 h-3.5 text-emerald-400" />
+              <span class="text-[11px]">Faire confiance</span>
+            </button>
 
             <!-- Action Purger tout le domaine -->
             <button
@@ -1265,7 +1391,15 @@ function formatRelativeDate(ts: number): string {
             </button>
           </div>
           <template v-else>
-            {{ store.previewedEmail.body_snippet || "(Aucun aperçu disponible pour ce message)" }}
+            <div
+              v-if="store.previewedEmail.body_snippet?.startsWith('⚠️')"
+              class="p-4 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 font-sans whitespace-pre-wrap leading-relaxed text-xs"
+            >
+              {{ store.previewedEmail.body_snippet }}
+            </div>
+            <div v-else class="whitespace-pre-wrap font-sans text-xs leading-relaxed text-slate-300">
+              {{ store.previewedEmail.body_snippet || "(Aucun aperçu disponible pour ce message)" }}
+            </div>
           </template>
         </div>
 
@@ -1539,5 +1673,18 @@ function formatRelativeDate(ts: number): string {
         </div>
       </div>
     </div>
+
+    <!-- Modal : Chasse aux Orphelins & Spams -->
+    <OrphanSpamModal
+      :is-open="isOrphanSpamModalOpen"
+      @close="isOrphanSpamModalOpen = false"
+      @open-settings="isSpamRulesModalOpen = true"
+    />
+
+    <!-- Modal : Gestion des Règles & Exceptions (ESP Whitelist & TLDs) -->
+    <SpamRulesSettingsModal
+      :is-open="isSpamRulesModalOpen"
+      @close="isSpamRulesModalOpen = false"
+    />
   </div>
 </template>

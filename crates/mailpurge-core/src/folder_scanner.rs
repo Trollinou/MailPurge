@@ -106,6 +106,29 @@ impl FolderInfo {
 
         !excluded_names.contains(&last_segment)
     }
+
+    /// Determines if this folder represents the Sent / Éléments envoyés folder.
+    pub fn is_sent(&self) -> bool {
+        if self.attributes.contains(&FolderAttribute::Sent) {
+            return true;
+        }
+        let normalized = deunicode(&self.path).to_lowercase();
+        let last_segment = normalized.rsplit('/').next().unwrap_or(&normalized).trim();
+        matches!(
+            last_segment,
+            "sent"
+                | "sent messages"
+                | "sent items"
+                | "elements envoyes"
+                | "messages envoyes"
+                | "envoyes"
+                | "gesendete objekte"
+                | "gesendet"
+                | "inviati"
+                | "enviados"
+        ) || normalized.contains("[gmail]/sent")
+            || normalized.contains("[gmail]/messages envoyes")
+    }
 }
 
 /// Identifies the Trash folder from a list of folders.

@@ -113,6 +113,7 @@ async fn test_mock_provider_lifecycle() {
             list_id: None,
             list_unsubscribe: None,
             list_unsubscribe_post: None,
+            ..Default::default()
         },
     );
     provider.add_email(
@@ -130,6 +131,7 @@ async fn test_mock_provider_lifecycle() {
             list_id: None,
             list_unsubscribe: None,
             list_unsubscribe_post: None,
+            ..Default::default()
         },
     );
 
@@ -186,6 +188,7 @@ async fn test_folder_count_and_range_fetching() {
                 list_id: None,
                 list_unsubscribe: None,
                 list_unsubscribe_post: None,
+                ..Default::default()
             },
         );
     }

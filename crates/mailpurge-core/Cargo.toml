@@ -27,6 +27,7 @@ open = "5.3"
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
 sha2 = "0.10"
 base64 = "0.22"
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
 
 [lints]
 workspace = true

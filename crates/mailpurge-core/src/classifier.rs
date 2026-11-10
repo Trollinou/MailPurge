@@ -1,9 +1,10 @@
 use deunicode::deunicode;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum EmailClassification {
+    #[default]
     Purgeable,
     ProtectedInvoice,
     ProtectedFlagged,
@@ -73,6 +74,7 @@ pub struct EmailMetadataInput<'a> {
     pub has_unsubscribe: bool,
     pub attachment_names: &'a [String],
     pub root_domain: Option<&'a str>,
+    pub spam_verdict: Option<&'a crate::domain::orphan_spam::SpamVerdictDetail>,
 }
 
 /// Classifies an email according to retention, flags, transactional content, personal domains, and attachments.
@@ -93,28 +95,35 @@ pub fn classify_email(
         return EmailClassification::Recent;
     }
 
+    // Hard spam signals (dead domain, SPF/DKIM fail, SCL:5+, return path dissonance) revoke invoice protection
+    let is_hard_spam = metadata
+        .spam_verdict
+        .map_or(false, |v| v.has_hard_spam_signals());
+
     // 3. Transactional keywords check in subject (case and accent insensitive)
-    let normalized_subject = deunicode(metadata.subject).to_lowercase();
-    let has_transactional_keyword = config.transactional_keywords.iter().any(|keyword| {
-        let normalized_kw = deunicode(keyword).to_lowercase();
-        normalized_subject.contains(&normalized_kw)
-    });
+    if !is_hard_spam {
+        let normalized_subject = deunicode(metadata.subject).to_lowercase();
+        let has_transactional_keyword = config.transactional_keywords.iter().any(|keyword| {
+            let normalized_kw = deunicode(keyword).to_lowercase();
+            normalized_subject.contains(&normalized_kw)
+        });
 
-    if has_transactional_keyword {
-        return EmailClassification::ProtectedInvoice;
-    }
+        if has_transactional_keyword {
+            return EmailClassification::ProtectedInvoice;
+        }
 
-    // 4. Protected attachments (e.g. PDF) without newsletter/unsubscribe header
-    let has_protected_attachment = metadata.attachment_names.iter().any(|name| {
-        let lower_name = name.to_lowercase();
-        config
-            .protected_extensions
-            .iter()
-            .any(|ext| lower_name.ends_with(&ext.to_lowercase()))
-    });
+        // 4. Protected attachments (e.g. PDF) without newsletter/unsubscribe header
+        let has_protected_attachment = metadata.attachment_names.iter().any(|name| {
+            let lower_name = name.to_lowercase();
+            config
+                .protected_extensions
+                .iter()
+                .any(|ext| lower_name.ends_with(&ext.to_lowercase()))
+        });
 
-    if has_protected_attachment && !metadata.has_unsubscribe {
-        return EmailClassification::ProtectedInvoice;
+        if has_protected_attachment && !metadata.has_unsubscribe {
+            return EmailClassification::ProtectedInvoice;
+        }
     }
 
     // 5. Personal / ISP domain protection (e.g. orange.fr, free.fr, gmail.com)

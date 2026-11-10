@@ -10,11 +10,20 @@ use mailpurge_core::auth::{
     listen_for_oauth_code, KeyringStore, OAuthProvider,
 };
 
+use mailpurge_core::adapters::community_rules_updater::{
+    CommunityRulesUpdater, DEFAULT_DISPOSABLE_DOMAINS_URL,
+};
+use mailpurge_core::adapters::hickory_dns_adapter::HickoryDnsAdapter;
 use mailpurge_core::classifier::{
     classify_email, ClassifierConfig, EmailClassification, EmailMetadataInput,
 };
+use mailpurge_core::domain::community_rules::{
+    CommunityRulesUpdateReport, EspWhitelistEntry, SuspiciousTldEntry,
+};
+use mailpurge_core::domain::orphan_spam::{DnsStatus, OrphanSummaryReport};
 use mailpurge_core::domain_extractor::extract_sender_domain;
 use mailpurge_core::mock_provider::MockMailProvider;
+use mailpurge_core::ports::dns_port::DnsResolverPort;
 use mailpurge_core::provider_port::MailProviderPort;
 use mailpurge_core::purge_executor::{PurgeCandidate, PurgeConfig, PurgeExecutor, PurgeReport};
 use mailpurge_core::storage::{
@@ -321,7 +330,31 @@ async fn fetch_email_preview(
     };
 
     let snippet = if snippet_raw.trim().is_empty() {
-        "(Aucun aperçu disponible pour ce message)".to_string()
+        let diag_info = state
+            .storage
+            .get_email_diagnostic_info(account_id, &folder_path, uid);
+        match diag_info {
+            Ok(Some((atts, auth_res, spam_hdrs))) => {
+                let mut parts =
+                    vec!["⚠️ Aucun texte brut disponible dans le corps du message.".to_string()];
+                if !atts.is_empty() {
+                    parts.push(format!("📎 Pièce(s) jointe(s) : {}", atts.join(", ")));
+                    parts.push("(Attention : de nombreux spams imitent des factures avec une pièce jointe sans texte).".to_string());
+                }
+                if let Some(auth) = auth_res {
+                    if auth.contains("fail") {
+                        parts.push(format!("🛡️ Authentification serveur en échec : {auth}"));
+                    }
+                }
+                if let Some(spam) = spam_hdrs {
+                    if !spam.is_empty() {
+                        parts.push(format!("🛡️ Marqueurs antispam serveur : {spam}"));
+                    }
+                }
+                parts.join("\n\n")
+            }
+            _ => "(Aucun aperçu disponible pour ce message)".to_string(),
+        }
     } else {
         snippet_raw
     };
@@ -824,6 +857,7 @@ fn recalculate_retention(
                         has_unsubscribe: email.has_unsubscribe,
                         attachment_names: &email.attachment_names,
                         root_domain: Some(&email.root_domain),
+                        spam_verdict: None,
                     },
                     &config,
                     now,
@@ -1199,6 +1233,57 @@ async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, Str
             list_unsub: None,
             list_post: None,
         },
+
+        // Orphan 1: Dead domain (One-Hit Wonder, 2 years old)
+        DemoItem {
+            from: "contact@super-promo-perdu.com",
+            subject: "Liquidation totale avant fermeture de stock",
+            date_ts: now - (600 * 86400),
+            size_bytes: 42_000,
+            has_unsub: false,
+            has_att: false,
+            atts: vec![],
+            is_flagged: false,
+            folder: "INBOX",
+            body_snippet: "Offres exceptionnelles valables uniquement aujourd'hui. Profitez de nos remises exceptionnelles avant épuisement des stocks.",
+            list_id: None,
+            list_unsub: None,
+            list_post: None,
+        },
+
+        // Orphan 2: Server anti-spam verdict (spf=fail, SCL:9, fake invoice PDF revoking protection)
+        DemoItem {
+            from: "service-securite@banque-postale-fake.com",
+            subject: "Facture impayée n° 98124 et mise en demeure",
+            date_ts: now - (180 * 86400),
+            size_bytes: 180_000,
+            has_unsub: false,
+            has_att: true,
+            atts: vec!["facture_fake.pdf".to_string()],
+            is_flagged: false,
+            folder: "INBOX",
+            body_snippet: "",
+            list_id: None,
+            list_unsub: None,
+            list_post: None,
+        },
+
+        // Orphan 3: Structural anomaly (high-risk .xyz TLD + burner Return-Path)
+        DemoItem {
+            from: "Loterie <winner@mega-tirage-promo.xyz>",
+            subject: "Confirmation de votre gain au tirage spécial",
+            date_ts: now - (140 * 86400),
+            size_bytes: 55_000,
+            has_unsub: false,
+            has_att: false,
+            atts: vec![],
+            is_flagged: false,
+            folder: "INBOX",
+            body_snippet: "Votre adresse a été sélectionnée pour le tirage de printemps. Réclamez votre prix sous 48h.",
+            list_id: None,
+            list_unsub: None,
+            list_post: None,
+        },
     ];
 
     let mut email_records = Vec::new();
@@ -1216,6 +1301,20 @@ async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, Str
             }
         });
 
+        let (auth_results, spam_headers, return_path) = match sender.root_domain.as_str() {
+            "banque-postale-fake.com" => (
+                Some("spf=fail; dkim=fail; dmarc=fail".to_string()),
+                Some("X-Spam-Status: Yes; X-Forefront-Antispam-Report: SCL:9; CAT:SPM".to_string()),
+                None,
+            ),
+            "mega-tirage-promo.xyz" => (
+                None,
+                None,
+                Some("bounce-999@burner-spammer.top".to_string()),
+            ),
+            _ => (None, None, None),
+        };
+
         let meta = EmailMetadataInput {
             uid,
             subject: item.subject,
@@ -1224,6 +1323,7 @@ async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, Str
             has_unsubscribe: item.has_unsub,
             attachment_names: &item.atts,
             root_domain: Some(&sender.root_domain),
+            spam_verdict: None,
         };
 
         let classification = classify_email(&meta, &config, now);
@@ -1248,6 +1348,10 @@ async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, Str
             list_id: item.list_id.map(|s| s.to_string()),
             list_unsubscribe: item.list_unsub.map(|s| s.to_string()),
             list_unsubscribe_post: item.list_post.map(|s| s.to_string()),
+            return_path: return_path.clone(),
+            auth_results: auth_results.clone(),
+            spam_headers: spam_headers.clone(),
+            to_recipients: None,
         });
 
         mock_provider.add_email(
@@ -1265,6 +1369,10 @@ async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, Str
                 list_id: item.list_id.map(|s| s.to_string()),
                 list_unsubscribe: item.list_unsub.map(|s| s.to_string()),
                 list_unsubscribe_post: item.list_post.map(|s| s.to_string()),
+                return_path,
+                authentication_results: auth_results,
+                spam_verdict_header: spam_headers,
+                to_header: None,
             },
         );
     }
@@ -1274,7 +1382,335 @@ async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, Str
         .upsert_emails(&email_records)
         .map_err(|e| format!("Erreur insertion démo: {e}"))?;
 
+    // Seed shared DNS status for dead demo domain
+    let _ = state.storage.upsert_shared_domain_dns_batch(&[(
+        "super-promo-perdu.com".to_string(),
+        DnsStatus::DeadNxDomain,
+        30 * 86_400,
+    )]);
+
     Ok(account)
+}
+
+#[tauri::command]
+fn get_orphan_summary(
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+    threshold: Option<u64>,
+) -> Result<OrphanSummaryReport, String> {
+    let t = threshold.unwrap_or(3);
+    state
+        .storage
+        .get_orphan_summary(account_id, t)
+        .map_err(|e| format!("Erreur récupération orphelins: {e}"))
+}
+
+#[tauri::command]
+async fn analyze_orphan_dns(
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+    threshold: Option<u64>,
+) -> Result<OrphanSummaryReport, String> {
+    let t = threshold.unwrap_or(3);
+    let summary = state
+        .storage
+        .get_orphan_summary(account_id, t)
+        .map_err(|e| format!("Erreur récupération orphelins: {e}"))?;
+
+    let mut domains = Vec::new();
+    for group in &summary.groups {
+        for d in &group.domains {
+            domains.push(d.clone());
+        }
+    }
+    domains.sort();
+    domains.dedup();
+
+    if !domains.is_empty() {
+        let now = chrono::Utc::now().timestamp();
+        let cached = state
+            .storage
+            .get_shared_domain_intelligence(&domains)
+            .map_err(|e| format!("Erreur cache DNS: {e}"))?;
+
+        let to_resolve: Vec<String> = domains
+            .into_iter()
+            .filter(|d| match cached.get(d) {
+                Some(intel) => !intel.is_dns_fresh(now),
+                None => true,
+            })
+            .collect();
+
+        if !to_resolve.is_empty() {
+            let resolver = HickoryDnsAdapter::from_system_conf()
+                .map_err(|e| format!("Erreur résolveur DNS: {e}"))?;
+
+            let mut resolved_results = Vec::with_capacity(to_resolve.len());
+            for chunk in to_resolve.chunks(20) {
+                let futures: Vec<_> = chunk
+                    .iter()
+                    .map(|d| {
+                        let resolver_ref = &resolver;
+                        async move {
+                            let (status, ttl) = resolver_ref.check_domain(d).await;
+                            (d.clone(), status, ttl)
+                        }
+                    })
+                    .collect();
+
+                let chunk_results = futures::future::join_all(futures).await;
+                resolved_results.extend(chunk_results);
+            }
+
+            state
+                .storage
+                .upsert_shared_domain_dns_batch(&resolved_results)
+                .map_err(|e| format!("Erreur sauvegarde cache DNS: {e}"))?;
+        }
+    }
+
+    state
+        .storage
+        .get_orphan_summary(account_id, t)
+        .map_err(|e| format!("Erreur rafraîchissement orphelins: {e}"))
+}
+
+#[tauri::command]
+async fn purge_orphan_group(
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+    category: Option<String>,
+    threshold: Option<u64>,
+    dry_run: bool,
+) -> Result<PurgeReport, String> {
+    let t = threshold.unwrap_or(3);
+    let cat_enum = match category.as_deref() {
+        Some("DEAD_DOMAIN") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::DeadDomain)
+        }
+        Some("SERVER_SPAM" | "SERVER_SPAM_VERDICT") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::ServerSpamVerdict)
+        }
+        Some("STRUCTURAL_ANOMALY") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::StructuralAnomaly)
+        }
+        Some("DISPOSABLE" | "DISPOSABLE_DOMAIN") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::DisposableDomain)
+        }
+        _ => None,
+    };
+
+    let accounts = match account_id {
+        Some(id) => {
+            let acc = state
+                .storage
+                .get_account(id)
+                .map_err(|e| format!("Erreur compte: {e}"))?
+                .ok_or_else(|| format!("Compte introuvable: {id}"))?;
+            vec![acc]
+        }
+        None => state
+            .storage
+            .list_accounts()
+            .map_err(|e| format!("Erreur liste des comptes: {e}"))?,
+    };
+
+    let mut combined_report = PurgeReport {
+        is_dry_run: dry_run,
+        ..Default::default()
+    };
+
+    for account in accounts {
+        let candidates_raw = state
+            .storage
+            .get_orphan_candidates_for_purge(account.id, cat_enum, t)
+            .map_err(|e| format!("Erreur récupération cibles orphelins: {e}"))?;
+
+        if candidates_raw.is_empty() {
+            continue;
+        }
+
+        let candidates: Vec<PurgeCandidate> = candidates_raw
+            .into_iter()
+            .map(|(folder, uid, size)| PurgeCandidate {
+                folder_path: folder,
+                uid,
+                size_bytes: size,
+                classification: EmailClassification::Purgeable,
+            })
+            .collect();
+
+        let config = PurgeConfig {
+            batch_size: 500,
+            dry_run,
+        };
+
+        let report = if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
+            let mut provider = state.mock_provider.lock().await;
+            PurgeExecutor::execute(&mut *provider, &candidates, "Corbeille", &config)
+                .await
+                .map_err(|e| format!("Erreur purge orphelins (mock): {e}"))?
+        } else {
+            let imap_config = resolve_imap_config(&account, &state.secret_cache)?;
+            let mut provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
+            let trash_folder = get_trash_folder_path(&provider).await;
+            PurgeExecutor::execute(&mut provider, &candidates, &trash_folder, &config)
+                .await
+                .map_err(|e| format!("Erreur purge orphelins: {e}"))?
+        };
+
+        if !dry_run {
+            for (folder, purged_uids) in &report.details_by_folder {
+                state
+                    .storage
+                    .delete_emails(account.id, folder, purged_uids)
+                    .map_err(|e| format!("Erreur mise à jour cache SQLite: {e}"))?;
+            }
+        }
+
+        combined_report.total_candidates += report.total_candidates;
+        combined_report.purged_count += report.purged_count;
+        combined_report.purged_bytes += report.purged_bytes;
+        combined_report.skipped_protected_count += report.skipped_protected_count;
+        combined_report.batches_executed += report.batches_executed;
+        for (f, uids) in report.details_by_folder {
+            combined_report
+                .details_by_folder
+                .entry(f)
+                .or_default()
+                .extend(uids);
+        }
+    }
+
+    Ok(combined_report)
+}
+
+#[tauri::command]
+async fn tag_orphan_group(
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+    category: Option<String>,
+    threshold: Option<u64>,
+) -> Result<usize, String> {
+    let t = threshold.unwrap_or(3);
+    let cat_enum = match category.as_deref() {
+        Some("DEAD_DOMAIN") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::DeadDomain)
+        }
+        Some("SERVER_SPAM" | "SERVER_SPAM_VERDICT") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::ServerSpamVerdict)
+        }
+        Some("STRUCTURAL_ANOMALY") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::StructuralAnomaly)
+        }
+        Some("DISPOSABLE" | "DISPOSABLE_DOMAIN") => {
+            Some(mailpurge_core::domain::orphan_spam::OrphanCategory::DisposableDomain)
+        }
+        _ => None,
+    };
+
+    state
+        .storage
+        .tag_orphan_domains(account_id, cat_enum, t)
+        .map_err(|e| format!("Erreur marquage des domaines orphelins: {e}"))
+}
+
+#[tauri::command]
+async fn unmark_orphan_domain(
+    state: State<'_, AppState>,
+    account_id: i64,
+    root_domain: String,
+    add_to_whitelist: bool,
+) -> Result<(), String> {
+    state
+        .storage
+        .unmark_orphan_domain(account_id, &root_domain, add_to_whitelist)
+        .map_err(|e| format!("Erreur dé-marquage domaine: {e}"))
+}
+
+#[tauri::command]
+fn get_esp_whitelist(state: State<'_, AppState>) -> Result<Vec<EspWhitelistEntry>, String> {
+    state
+        .storage
+        .get_esp_whitelist()
+        .map_err(|e| format!("Erreur liste blanche ESP: {e}"))
+}
+
+#[tauri::command]
+fn update_esp_whitelist_entry(
+    state: State<'_, AppState>,
+    entry: EspWhitelistEntry,
+) -> Result<(), String> {
+    state
+        .storage
+        .upsert_esp_whitelist_entry(&entry)
+        .map_err(|e| format!("Erreur mise à jour ESP: {e}"))
+}
+
+#[tauri::command]
+fn toggle_esp_whitelist_entry(
+    state: State<'_, AppState>,
+    root_domain: String,
+    enabled: bool,
+) -> Result<(), String> {
+    state
+        .storage
+        .set_esp_enabled(&root_domain, enabled)
+        .map_err(|e| format!("Erreur activation/désactivation ESP: {e}"))
+}
+
+#[tauri::command]
+fn get_suspicious_tlds(state: State<'_, AppState>) -> Result<Vec<SuspiciousTldEntry>, String> {
+    state
+        .storage
+        .get_suspicious_tlds()
+        .map_err(|e| format!("Erreur lecture TLDs suspects: {e}"))
+}
+
+#[tauri::command]
+fn update_suspicious_tld_entry(
+    state: State<'_, AppState>,
+    entry: SuspiciousTldEntry,
+) -> Result<(), String> {
+    state
+        .storage
+        .upsert_tld_entry(&entry)
+        .map_err(|e| format!("Erreur mise à jour TLD: {e}"))
+}
+
+#[tauri::command]
+fn toggle_suspicious_tld_entry(
+    state: State<'_, AppState>,
+    tld: String,
+    enabled: bool,
+) -> Result<(), String> {
+    state
+        .storage
+        .set_tld_enabled(&tld, enabled)
+        .map_err(|e| format!("Erreur activation/désactivation TLD: {e}"))
+}
+
+#[tauri::command]
+async fn update_all_community_rules(
+    state: State<'_, AppState>,
+) -> Result<CommunityRulesUpdateReport, String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        CommunityRulesUpdater::update_rules(&storage, Some(DEFAULT_DISPOSABLE_DOMAINS_URL))
+            .map_err(|e| format!("Erreur synchronisation règles communautaires: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Erreur tâche asynchrone: {e}"))?
+}
+
+#[tauri::command]
+fn get_community_rules_status(
+    state: State<'_, AppState>,
+) -> Result<CommunityRulesUpdateReport, String> {
+    state
+        .storage
+        .get_community_rules_status()
+        .map_err(|e| format!("Erreur statut règles: {e}"))
 }
 
 pub fn run() {
@@ -1324,7 +1760,20 @@ pub fn run() {
             fetch_email_preview,
             update_account_name,
             unprotect_domain_emails,
-            reclassify_domain_emails
+            reclassify_domain_emails,
+            get_orphan_summary,
+            analyze_orphan_dns,
+            purge_orphan_group,
+            tag_orphan_group,
+            unmark_orphan_domain,
+            get_esp_whitelist,
+            update_esp_whitelist_entry,
+            toggle_esp_whitelist_entry,
+            get_suspicious_tlds,
+            update_suspicious_tld_entry,
+            toggle_suspicious_tld_entry,
+            update_all_community_rules,
+            get_community_rules_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

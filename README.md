@@ -24,6 +24,14 @@
   - Prise en charge du One-Click `List-Unsubscribe=One-Click` via requête HTTPS `POST`.
   - Prise en charge des liens de désinscription web (`https://...`) et des URI `mailto:`.
   - Action combinée « Se désabonner + Mettre en corbeille » pour éliminer tous les courriels affiliés à une liste sans être bloqué par l'ancienneté.
+- **Chasse aux Orphelins & Spams Éphémères (*One-Hit Wonders*) :**
+  - Détection ciblée de la « longue traîne » (spammeurs envoyant peu de messages avant d'abandonner leur domaine) sans téléchargement de corps.
+  - **Test du Domaine Mort (NXDOMAIN) :** Résolution DNS asynchrone ultra-rapide (`hickory-resolver`) vérifiant l'existence de serveurs `MX` ou `A`, avec cache SQLite partagé multi-comptes et TTL.
+  - **Verdicts Anti-Spam Serveurs :** Exploitation des analyses pré-calculées par les hébergeurs (`spf=fail`, `dkim=fail`, `dmarc=fail`, `X-Spam-Status`, `X-Forefront-Antispam-Report` SCL:5+).
+  - **Anomalies Structurelles & TLDs à Risque :** Dissonance `From` vs `Return-Path` (avec exception pour les routeurs ESP de confiance), TLDs suspects (.xyz, .top, .loan...) et adresses jetables.
+  - **Moteur de Confiance à 4 Piliers :** Domaines souverains/académiques (`*.gouv.fr`, `*.sante.fr`, `*.edu`), liste blanche statique embarquée de +120 services, récolte automatique des correspondants légitimes depuis le dossier Éléments envoyés (`\Sent`), et garde-fou anti-phishing.
+  - **Flux de Marquage & Inspection Sécurisée :** Marquage en base sans purge aveugle, filtre multi-tags dans l'écran principal, badges explicites et bouton inline « 🛡️ Faire confiance » pour lever les alertes en un clic.
+  - **Règles Communautaires & Exceptions :** Modale de gestion dédiée pour synchroniser les listes publiques ou ajouter des exceptions personnalisées (routeurs internes, TLDs).
 - **Moteur IMAP Conforme & Optimisé :**
   - Connexion TLS port 993 avec mise en cache des sessions et des identifiants (réduction drastique des sollicitations du trousseau OS).
   - Détection dynamique du dossier Corbeille conforme à la **RFC 6154** (`SPECIAL-USE` `\Trash`).
@@ -50,16 +58,18 @@ mailpurge/
 ├── crates/mailpurge-core/
 │   ├── src/
 │   │   ├── domain/               # Entités & Règles métier pures (Zéro I/O)
+│   │   │   ├── community_rules.rs # Gestion des règles d'intelligence & exceptions
+│   │   │   ├── orphan_spam.rs     # Catégorisation de la longue traîne spam
 │   │   │   ├── retention.rs      # Calculateur d'ancienneté et rétention
-│   │   │   └── ...
-│   │   ├── ports/                # Interfaces abstraites (Traits)
-│   │   │   └── ...
-│   │   ├── adapters/             # Implémentations techniques
+│   │   │   └── trusted_domains.rs # Moteur de confiance à 4 piliers
+│   │   ├── ports/                # Interfaces abstraites (Traits MailProvider, DnsResolver)
+│   │   ├── adapters/             # Hickory DNS, Mises à jour communautaires
 │   │   ├── classifier.rs         # Moteur de scoring & classification transactionnelle
 │   │   ├── domain_extractor.rs   # Extracteur résilient eTLD+1 & sanitisation
-│   │   ├── folder_scanner.rs     # Détection RFC 6154 des dossiers
+│   │   ├── folder_scanner.rs     # Détection RFC 6154 des dossiers & Sent
 │   │   ├── imap_provider.rs      # Adaptateur IMAP TLS (async/blocking + rustls)
-│   │   ├── storage.rs            # Adaptateur SQLite avec migrations auto
+│   │   ├── spam_analyzer.rs      # Analyseur de verdicts d'authentification & anomalies
+│   │   ├── storage.rs            # Adaptateur SQLite avec cache partagé & tags
 │   │   └── unsubscribe.rs        # Moteur HTTP/Mailto RFC 8058 / RFC 2369
 │   └── tests/                    # Tests unitaires, TDD & intégration
 ├── src-tauri/                    # Couche applicative & IPC Tauri v2
