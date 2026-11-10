@@ -78,7 +78,7 @@ sequenceDiagram
   1. Mini-serveur local temporaire (socket TCP locale sur port aléatoire) pour recevoir le code de rappel OAuth2 (`/callback?code=...`).
   2. Génération du challenge PKCE (`code_verifier` / `code_challenge` S256).
   3. Échange du code contre `access_token` et `refresh_token`.
-  4. Stockage et lecture via `keyring` sous le namespace `com.mailpurge.app`.
+  4. Stockage et lecture via `keyring` sous le namespace `eu.gagnon.mailpurge`.
   5. Rafraîchissement automatique des tokens expirés lors des requêtes IMAP.
 
 ---

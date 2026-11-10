@@ -1,12 +1,13 @@
 {
   "name": "mailpurge",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.9.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
+    "version:sync": "node scripts/sync-version.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

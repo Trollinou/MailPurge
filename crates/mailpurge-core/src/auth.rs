@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Service namespace used for storing credentials in OS Keyring.
-pub const KEYRING_SERVICE_NAME: &str = "com.mailpurge.app";
+pub const KEYRING_SERVICE_NAME: &str = "eu.gagnon.mailpurge";
 
 /// Supported `OAuth2` identity providers.
 #[derive(Debug, Clone, PartialEq, Eq)]

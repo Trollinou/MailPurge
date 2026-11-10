@@ -5,6 +5,12 @@ members = [
     "src-tauri",
 ]
 
+[workspace.package]
+version = "0.9.0"
+authors = ["Etienne"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

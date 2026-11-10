@@ -40,5 +40,5 @@ pub mod unsubscribe;
 /// Returns the current core library version.
 #[must_use]
 pub const fn version() -> &'static str {
-    "0.1.0"
+    env!("CARGO_PKG_VERSION")
 }

@@ -97,14 +97,46 @@ mailpurge/
 npm install
 
 # Lancement de l'application Tauri en mode dev
-cargo tauri dev
+npm run tauri dev
+# (ou cargo tauri dev si tauri-cli est installé globalement)
 ```
 
-### Compilation de production
+### Production & Création des Paquets Exécutables
 
 ```bash
-cargo tauri build
+# Génération du paquet d'installation pour votre système (DMG sur macOS, MSI sur Windows, etc.)
+npm run tauri build
+
+# Variante rapide sans optimisations lourdes (mode debug)
+npm run tauri build -- --debug
+
+# Variante macOS universelle (Intel + Apple Silicon)
+npm run tauri build -- --target universal-apple-darwin
 ```
+
+Les installateurs et binaires générés se trouvent dans :
+- **macOS** : `src-tauri/target/release/bundle/dmg/` (`.dmg`) et `src-tauri/target/release/bundle/macos/` (`MailPurge.app`)
+- **Windows** : `src-tauri/target/release/bundle/msi/` (`.msi`) et `src-tauri/target/release/bundle/nsis/` (`.exe`)
+- **Linux** : `src-tauri/target/release/bundle/deb/` (`.deb`) et `src-tauri/target/release/bundle/appimage/` (`.AppImage`)
+
+---
+
+## 🏷️ Gestion des Versions & Identifiants
+
+Le projet unifie ses numéros de version depuis le `Cargo.toml` racine via un script dédié :
+
+```bash
+# Propage la version définie dans Cargo.toml vers tauri.conf.json et package.json
+npm run version:sync
+
+# Ou change la version partout en une seule commande (ex: 1.0.0) :
+just sync-version 1.0.0
+# (ou ./scripts/sync-version.sh 1.0.0)
+```
+
+- **Nom Commercial / Fenêtre :** `MailPurge`
+- **Bundle ID / Trousseau OS :** `eu.gagnon.mailpurge`
+- **Crates Rust :** `mailpurge-core` (librairie métier) & `mailpurge-app` (binaire Tauri)
 
 ---
 
@@ -114,11 +146,13 @@ Le projet applique une politique stricte de tolérance zéro sur la qualité du 
 
 1. **Formatage :** `cargo fmt --all -- --check`
 2. **Analyse Statique (Clippy Pedantic) :** `cargo clippy --all-targets --all-features -- -D warnings`
-3. **Tests Unitaires & Intégration :** `cargo test --workspace`
-4. **Dépendances Inutilisées :** `cargo machete`
-5. **Compilation Frontend :** `npm run build`
+3. **Tests Unitaires & Intégration :** `cargo nextest run` et doc-tests `cargo test --doc`
+4. **Audit de Sécurité & Licences :** `cargo deny --offline check`
+5. **Dépendances Inutilisées :** `cargo machete`
+6. **Compilation Frontend :** `npm run build`
 
-Pour exécuter la suite de tests complète :
+Pour lancer toute la suite de validation en un seul appel :
 ```bash
-cargo test --workspace
+just qa
+# (ou ./scripts/qa.sh)
 ```

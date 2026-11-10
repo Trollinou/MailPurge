@@ -46,6 +46,10 @@ qa: fmt lint test audit
     @echo ""
     @echo "✅ Quality Gate 100% Passed!"
 
+# Synchronize version from Cargo.toml to package.json and tauri.conf.json
+sync-version version="":
+    node scripts/sync-version.mjs {{version}}
+
 # Code coverage report generation
 coverage:
     cargo llvm-cov --html
