@@ -1239,14 +1239,33 @@ function formatRelativeDate(ts: number): string {
         <!-- Modal Body Content -->
         <div class="flex-1 overflow-y-auto p-5 text-xs leading-relaxed text-slate-200 whitespace-pre-wrap font-sans bg-slate-950/30">
           <div
-            v-if="!store.previewedEmail.body_snippet"
+            v-if="store.previewLoading"
             class="flex items-center justify-center py-12 text-slate-400 space-x-2"
           >
             <Loader2 class="w-4 h-4 animate-spin text-indigo-400" />
             <span>Chargement de l'aperçu du message depuis le serveur...</span>
           </div>
+          <div
+            v-else-if="store.previewError"
+            class="p-4 rounded-xl bg-rose-950/40 border border-rose-800/50 text-rose-300 space-y-3"
+          >
+            <div class="flex items-center space-x-2">
+              <AlertCircle class="w-4 h-4 text-rose-400 shrink-0" />
+              <span class="font-medium text-xs">Impossible de charger l'aperçu de l'email</span>
+            </div>
+            <p class="text-[11px] text-rose-300/80 font-mono break-all leading-normal">
+              {{ store.previewError }}
+            </p>
+            <button
+              @click="store.openPreview(store.previewedEmail)"
+              class="px-3 py-1.5 rounded-lg bg-rose-900/60 hover:bg-rose-800 text-rose-200 text-xs font-medium flex items-center space-x-1.5 transition"
+            >
+              <RefreshCw class="w-3.5 h-3.5" />
+              <span>Réessayer</span>
+            </button>
+          </div>
           <template v-else>
-            {{ store.previewedEmail.body_snippet }}
+            {{ store.previewedEmail.body_snippet || "(Aucun aperçu disponible pour ce message)" }}
           </template>
         </div>
 

@@ -31,6 +31,8 @@ export const useMailStore = defineStore("mail", {
     searchQuery: "",
     sortBy: "size" as DomainSortOption,
     previewedEmail: null as EmailRecord | null,
+    previewLoading: false,
+    previewError: null as string | null,
     lastReport: null as PurgeReport | null,
     statusMessage: "" as string,
   }),
@@ -361,6 +363,8 @@ export const useMailStore = defineStore("mail", {
 
     async openPreview(email: EmailRecord) {
       this.previewedEmail = email;
+      this.previewError = null;
+
       const isCorrupted =
         !email.body_snippet ||
         email.body_snippet.trim() === "" ||
@@ -377,26 +381,33 @@ export const useMailStore = defineStore("mail", {
         if (this.previewedEmail) {
           this.previewedEmail.body_snippet = undefined;
         }
+        this.previewLoading = true;
         try {
           const snippet = await invoke<string>("fetch_email_preview", {
             accountId: this.currentAccountId,
             folderPath: email.folder_path,
             uid: email.uid,
           });
-          if (snippet && snippet.trim() !== "") {
-            email.body_snippet = snippet;
-            if (this.previewedEmail && this.previewedEmail.uid === email.uid) {
-              this.previewedEmail.body_snippet = snippet;
-            }
+          const cleanSnippet = snippet?.trim() || "(Aucun aperçu disponible pour ce message)";
+          email.body_snippet = cleanSnippet;
+          if (this.previewedEmail && this.previewedEmail.uid === email.uid) {
+            this.previewedEmail.body_snippet = cleanSnippet;
           }
         } catch (err) {
           console.warn("Could not fetch email preview:", err);
+          this.previewError = String(err);
+        } finally {
+          this.previewLoading = false;
         }
+      } else {
+        this.previewLoading = false;
       }
     },
 
     closePreview() {
       this.previewedEmail = null;
+      this.previewLoading = false;
+      this.previewError = null;
     },
 
     async toggleEmailProtection(email: EmailRecord) {

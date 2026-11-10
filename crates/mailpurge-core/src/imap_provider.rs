@@ -903,7 +903,7 @@ impl MailProviderPort for ImapProvider {
     ) -> Result<String, MailProviderError> {
         let uid_str = uid.to_string();
 
-        let res = async {
+        let fetch_fut = async {
             let mut guard = self.get_session().await?;
             let session = guard.as_mut().ok_or_else(|| {
                 MailProviderError::ConnectionError("Session non initialisée".to_string())
@@ -915,18 +915,25 @@ impl MailProviderPort for ImapProvider {
                 .map_err(map_async_imap_error)?;
 
             // 1. Fetch email up to 64KB via BODY.PEEK[] without marking as read
+            let mut extracted = None;
             if let Ok(stream) = session.uid_fetch(&uid_str, "(BODY.PEEK[]<0.65536>)").await {
                 tokio::pin!(stream);
-                if let Some(res) = stream.next().await {
+                while let Some(res) = stream.next().await {
                     if let Ok(fetch) = res {
-                        if let Some(bytes) = fetch.body().or_else(|| fetch.text()) {
-                            let preview = extract_body_preview(bytes);
-                            if !preview.trim().is_empty() {
-                                return Ok(preview);
+                        if extracted.is_none() {
+                            if let Some(bytes) = fetch.body().or_else(|| fetch.text()) {
+                                let preview = extract_body_preview(bytes);
+                                if !preview.trim().is_empty() {
+                                    extracted = Some(preview);
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            if let Some(preview) = extracted {
+                return Ok(preview);
             }
 
             // 2. Fallback to full BODY.PEEK[]
@@ -936,19 +943,31 @@ impl MailProviderPort for ImapProvider {
                 .map_err(map_async_imap_error)?;
             tokio::pin!(stream);
 
+            let mut full_extracted = None;
             while let Some(res) = stream.next().await {
                 let fetch = res.map_err(map_async_imap_error)?;
-                if let Some(bytes) = fetch.body().or_else(|| fetch.text()) {
-                    let preview = extract_body_preview(bytes);
-                    if !preview.trim().is_empty() {
-                        return Ok(preview);
+                if full_extracted.is_none() {
+                    if let Some(bytes) = fetch.body().or_else(|| fetch.text()) {
+                        let preview = extract_body_preview(bytes);
+                        if !preview.trim().is_empty() {
+                            full_extracted = Some(preview);
+                        }
                     }
                 }
             }
 
-            Ok(String::new())
-        }
-        .await;
+            Ok(full_extracted.unwrap_or_default())
+        };
+
+        let res = match tokio::time::timeout(std::time::Duration::from_secs(10), fetch_fut).await {
+            Ok(inner_res) => inner_res,
+            Err(_) => {
+                tracing::warn!(uid, %folder_path, "Délai dépassé (timeout 10s) pour l'aperçu de l'email");
+                Err(MailProviderError::ConnectionError(
+                    "Délai d'attente dépassé (timeout 10s) lors de la récupération de l'aperçu depuis le serveur IMAP".to_string(),
+                ))
+            }
+        };
 
         if res.is_err() {
             self.invalidate_session().await;

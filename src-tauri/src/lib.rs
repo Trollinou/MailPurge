@@ -297,7 +297,12 @@ async fn fetch_email_preview(
         .map_err(|e| format!("Erreur compte: {e}"))?
         .ok_or_else(|| format!("Compte introuvable: {account_id}"))?;
 
-    let snippet = if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
+    eprintln!(
+        "[Preview] Récupération aperçu email UID={uid} dans dossier '{folder_path}' (compte: {})...",
+        account.email
+    );
+
+    let snippet_raw = if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
         let mut provider = state.mock_provider.lock().await;
         provider
             .fetch_body_snippet(&folder_path, uid)
@@ -309,14 +314,21 @@ async fn fetch_email_preview(
         provider
             .fetch_body_snippet(&folder_path, uid)
             .await
-            .map_err(|e| format!("Erreur chargement aperçu: {e}"))?
+            .map_err(|e| {
+                eprintln!("[Preview] ERREUR aperçu UID={uid}: {e}");
+                format!("Erreur chargement aperçu: {e}")
+            })?
     };
 
-    if !snippet.is_empty() {
-        let _ = state
-            .storage
-            .update_body_snippet(account_id, &folder_path, uid, &snippet);
-    }
+    let snippet = if snippet_raw.trim().is_empty() {
+        "(Aucun aperçu disponible pour ce message)".to_string()
+    } else {
+        snippet_raw
+    };
+
+    let _ = state
+        .storage
+        .update_body_snippet(account_id, &folder_path, uid, &snippet);
 
     Ok(snippet)
 }
