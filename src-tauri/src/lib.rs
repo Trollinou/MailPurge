@@ -32,6 +32,7 @@ pub struct AppState {
     pub storage: MailStorageRepository,
     pub mock_provider: tokio::sync::Mutex<MockMailProvider>,
     pub secret_cache: Arc<Mutex<HashMap<String, String>>>,
+    pub sync_cancellations: Arc<Mutex<HashMap<i64, Arc<std::sync::atomic::AtomicBool>>>>,
 }
 
 async fn get_trash_folder_path(provider: &dyn MailProviderPort) -> String {
@@ -114,15 +115,20 @@ fn resolve_imap_config(
             mailpurge_core::imap_provider::ImapAuthMethod::Password(secret),
         ),
         _ => {
-            let mut srv = "imap.mail.me.com".to_string();
-            let mut prt = 993;
-            if let Some(start) = account.display_name.find('(') {
-                if let Some(end) = account.display_name.rfind(')') {
-                    let inside = &account.display_name[start + 1..end];
-                    if let Some((h, p)) = inside.split_once(':') {
-                        srv = h.trim().to_string();
-                        if let Ok(parsed_p) = p.trim().parse::<u16>() {
-                            prt = parsed_p;
+            let mut srv = account
+                .server_host
+                .clone()
+                .unwrap_or_else(|| "imap.mail.me.com".to_string());
+            let mut prt = account.server_port.unwrap_or(993);
+            if account.server_host.is_none() {
+                if let Some(start) = account.display_name.find('(') {
+                    if let Some(end) = account.display_name.rfind(')') {
+                        let inside = &account.display_name[start + 1..end];
+                        if let Some((h, p)) = inside.split_once(':') {
+                            srv = h.trim().to_string();
+                            if let Ok(parsed_p) = p.trim().parse::<u16>() {
+                                prt = parsed_p;
+                            }
                         }
                     }
                 }
@@ -153,16 +159,31 @@ fn get_accounts(state: State<AppState>) -> Result<Vec<AccountRecord>, String> {
 
 #[tauri::command]
 fn delete_account(state: State<AppState>, account_id: i64) -> Result<(), String> {
+    // 1. Cancel active sync task if running
+    if let Ok(mut map) = state.sync_cancellations.lock() {
+        if let Some(flag) = map.remove(&account_id) {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    // 2. Remove secret from OS keyring and memory cache
     if let Ok(Some(account)) = state.storage.get_account(account_id) {
         let _ = KeyringStore::delete_secret(&account.email);
         if let Ok(mut cache) = state.secret_cache.lock() {
             cache.remove(&account.email);
         }
     }
+
+    // 3. Delete from SQLite
     state
         .storage
         .delete_account(account_id)
-        .map_err(|e| format!("Erreur suppression compte: {e}"))
+        .map_err(|e| format!("Erreur suppression compte: {e}"))?;
+
+    // 4. Reclaim disk space via SQLite VACUUM
+    let _ = state.storage.vacuum();
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -178,18 +199,23 @@ async fn update_account_password(
         .ok_or_else(|| format!("Compte introuvable: {account_id}"))?;
 
     // Validate password with IMAP server before saving
-    let mut srv = "imap.free.fr".to_string();
-    let mut prt = 993;
-    if let Some(start) = account.display_name.find('(') {
-        if let Some(end) = account.display_name.rfind(')') {
-            let inside = &account.display_name[start + 1..end];
-            if let Some((h, p)) = inside.split_once(':') {
-                srv = h.trim().to_string();
-                if let Ok(parsed_p) = p.trim().parse::<u16>() {
-                    prt = parsed_p;
+    let mut srv = account
+        .server_host
+        .clone()
+        .unwrap_or_else(|| "imap.free.fr".to_string());
+    let mut prt = account.server_port.unwrap_or(993);
+    if account.server_host.is_none() {
+        if let Some(start) = account.display_name.find('(') {
+            if let Some(end) = account.display_name.rfind(')') {
+                let inside = &account.display_name[start + 1..end];
+                if let Some((h, p)) = inside.split_once(':') {
+                    srv = h.trim().to_string();
+                    if let Ok(parsed_p) = p.trim().parse::<u16>() {
+                        prt = parsed_p;
+                    }
+                } else {
+                    srv = inside.trim().to_string();
                 }
-            } else {
-                srv = inside.trim().to_string();
             }
         }
     }
@@ -603,6 +629,7 @@ async fn add_imap_account(
     server: String,
     port: u16,
     provider_type: String,
+    account_name: Option<String>,
 ) -> Result<AccountRecord, String> {
     // 1. Validate credentials with IMAP server before saving
     let config = mailpurge_core::imap_provider::ImapConfig {
@@ -626,11 +653,62 @@ async fn add_imap_account(
         cache.insert(email.clone(), password);
     }
 
-    let display_name = format!("{email} ({server}:{port})");
+    let clean_account_name = account_name.filter(|s| !s.trim().is_empty());
+    let display_name = match &clean_account_name {
+        Some(name) => name.clone(),
+        None => format!("{email} ({server}:{port})"),
+    };
+
     state
         .storage
-        .create_account(&email, &provider_type, &display_name)
+        .create_account_with_details(
+            &email,
+            &provider_type,
+            &display_name,
+            clean_account_name.as_deref(),
+            Some(&server),
+            Some(port),
+        )
         .map_err(|e| format!("Erreur enregistrement compte: {e}"))
+}
+
+#[tauri::command]
+fn update_account_name(
+    state: State<AppState>,
+    account_id: i64,
+    account_name: Option<String>,
+) -> Result<(), String> {
+    let clean_name = account_name.filter(|s| !s.trim().is_empty());
+    state
+        .storage
+        .update_account_name(account_id, clean_name.as_deref())
+        .map_err(|e| format!("Erreur modification du nom de compte: {e}"))
+}
+
+#[tauri::command]
+fn unprotect_domain_emails(
+    state: State<AppState>,
+    account_id: i64,
+    root_domain: String,
+) -> Result<usize, String> {
+    state
+        .storage
+        .unprotect_domain_emails(account_id, &root_domain)
+        .map_err(|e| format!("Erreur déprotection des emails: {e}"))
+}
+
+#[tauri::command]
+fn reclassify_domain_emails(
+    state: State<AppState>,
+    account_id: i64,
+    root_domain: String,
+) -> Result<usize, String> {
+    let now = chrono::Utc::now().timestamp();
+    let config = ClassifierConfig::default();
+    state
+        .storage
+        .reclassify_domain_emails(account_id, &root_domain, &config, now)
+        .map_err(|e| format!("Erreur réévaluation des emails: {e}"))
 }
 
 #[tauri::command]
@@ -646,15 +724,21 @@ async fn sync_account(
         .map_err(|e| format!("Erreur lecture compte: {e}"))?
         .ok_or_else(|| format!("Compte introuvable: {account_id}"))?;
 
+    let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Ok(mut map) = state.sync_cancellations.lock() {
+        map.insert(account_id, cancel_flag.clone());
+    }
+
     if account.id == 1 && account.email == "etienne@entreprise-m365.fr" {
         // Mode Démo : synchroniser via le mock_provider
         let mut mock = state.mock_provider.lock().await;
-        sync_engine::execute_sync(&app, &storage, account_id, &mut *mock).await?;
+        sync_engine::execute_sync(&app, &storage, account_id, &mut *mock, cancel_flag).await?;
         return Ok(());
     }
 
     // Compte Réel : exécuter en arrière-plan
     let app_clone = app.clone();
+    let flag_clone = cancel_flag.clone();
     tauri::async_runtime::spawn(async move {
         eprintln!(
             "[Sync] Lancement synchronisation en arrière-plan pour '{}' (ID={})...",
@@ -667,7 +751,8 @@ async fn sync_account(
                 imap_config.server, imap_config.port, imap_config.username
             );
             let mut provider = mailpurge_core::imap_provider::ImapProvider::new(imap_config);
-            sync_engine::execute_sync(&app_clone, &storage, account_id, &mut provider).await
+            sync_engine::execute_sync(&app_clone, &storage, account_id, &mut provider, flag_clone)
+                .await
         }
         .await;
 
@@ -755,6 +840,9 @@ async fn load_demo_data(state: State<'_, AppState>) -> Result<AccountRecord, Str
         email: "etienne@entreprise-m365.fr".to_string(),
         provider_type: "microsoft365".to_string(),
         display_name: "Microsoft 365 Pro (Etienne)".to_string(),
+        account_name: Some("Microsoft 365 Pro (Etienne)".to_string()),
+        server_host: Some("outlook.office365.com".to_string()),
+        server_port: Some(993),
     };
 
     state
@@ -1199,6 +1287,7 @@ pub fn run() {
         storage,
         mock_provider: tokio::sync::Mutex::new(MockMailProvider::new()),
         secret_cache: Arc::new(Mutex::new(HashMap::new())),
+        sync_cancellations: Arc::new(Mutex::new(HashMap::new())),
     };
 
     tauri::Builder::default()
@@ -1220,7 +1309,10 @@ pub fn run() {
             recalculate_retention,
             delete_account,
             update_account_password,
-            fetch_email_preview
+            fetch_email_preview,
+            update_account_name,
+            unprotect_domain_emails,
+            reclassify_domain_emails
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

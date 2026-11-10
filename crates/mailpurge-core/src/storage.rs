@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::classifier::EmailClassification;
+use crate::classifier::{ClassifierConfig, EmailClassification};
 use crate::unsubscribe::{parse_unsubscribe_headers, UnsubscribeMethod};
 
 #[derive(Debug, Error)]
@@ -26,6 +26,12 @@ pub struct AccountRecord {
     pub email: String,
     pub provider_type: String,
     pub display_name: String,
+    #[serde(default)]
+    pub account_name: Option<String>,
+    #[serde(default)]
+    pub server_host: Option<String>,
+    #[serde(default)]
+    pub server_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +66,12 @@ pub struct DomainStats {
     pub purgeable_size: u64,
     pub protected_count: u64,
     pub is_personal_domain: bool,
+    #[serde(default)]
+    pub last_received_at: i64,
+    #[serde(default)]
+    pub list_count: u32,
+    #[serde(default)]
+    pub is_suspicious_spam: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +85,32 @@ pub struct DistributionListGroup {
     pub method: UnsubscribeMethod,
     pub target: Option<String>,
     pub post_body: Option<String>,
+    #[serde(default)]
+    pub last_received_at: i64,
+}
+
+/// Evaluates whether a domain exhibits characteristics of untrusted or spam mail.
+#[must_use]
+pub fn is_suspicious_domain(root_domain: &str, total_emails: u64, has_unsubscribe: bool) -> bool {
+    const SUSPICIOUS_TLDS: &[&str] = &[
+        ".xyz", ".top", ".buzz", ".icu", ".work", ".click", ".fit", ".rest", ".surf", ".monster",
+        ".sbs", ".cfd", ".bar", ".wiki", ".beauty", ".skin", ".hair", ".quest", ".link", ".live",
+        ".guru", ".shop", ".online", ".site", ".support",
+    ];
+    let lower = root_domain.to_lowercase();
+    for tld in SUSPICIOUS_TLDS {
+        if lower.ends_with(tld) {
+            return true;
+        }
+    }
+    // High digit count in domain name with very low email volume and no unsubscribe header
+    if total_emails <= 2 && !has_unsubscribe {
+        let digit_count = lower.chars().filter(|c| c.is_ascii_digit()).count();
+        if digit_count >= 3 {
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Clone)]
@@ -143,6 +181,40 @@ impl MailStorageRepository {
             "ALTER TABLE emails ADD COLUMN list_unsubscribe_post TEXT;",
             [],
         );
+        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN account_name TEXT;", []);
+        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN server_host TEXT;", []);
+        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN server_port INTEGER;", []);
+
+        // Migrate existing accounts lacking server_host
+        if let Ok(mut mig_stmt) =
+            conn.prepare("SELECT id, display_name FROM accounts WHERE server_host IS NULL")
+        {
+            let mig_rows = mig_stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            });
+            if let Ok(rows) = mig_rows {
+                let mut updates = Vec::new();
+                for r in rows.flatten() {
+                    let (acc_id, disp) = r;
+                    if let Some(start) = disp.find('(') {
+                        if let Some(end) = disp.rfind(')') {
+                            let inside = &disp[start + 1..end];
+                            if let Some((h, p)) = inside.split_once(':') {
+                                if let Ok(port) = p.trim().parse::<u16>() {
+                                    updates.push((acc_id, h.trim().to_string(), port));
+                                }
+                            }
+                        }
+                    }
+                }
+                for (acc_id, host, port) in updates {
+                    let _ = conn.execute(
+                        "UPDATE accounts SET server_host = ?1, server_port = ?2 WHERE id = ?3",
+                        params![host, port, acc_id],
+                    );
+                }
+            }
+        }
 
         // Invalidate any legacy previews that contained raw HTML / CSS
         let _ = conn.execute(
@@ -216,20 +288,35 @@ impl MailStorageRepository {
         provider_type: &str,
         display_name: &str,
     ) -> Result<AccountRecord, StorageError> {
+        self.create_account_with_details(email, provider_type, display_name, None, None, None)
+    }
+
+    pub fn create_account_with_details(
+        &self,
+        email: &str,
+        provider_type: &str,
+        display_name: &str,
+        account_name: Option<&str>,
+        server_host: Option<&str>,
+        server_port: Option<u16>,
+    ) -> Result<AccountRecord, StorageError> {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             r#"
-            INSERT INTO accounts (email, provider_type, display_name)
-            VALUES (?1, ?2, ?3)
+            INSERT INTO accounts (email, provider_type, display_name, account_name, server_host, server_port)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ON CONFLICT(email) DO UPDATE SET
                 provider_type = excluded.provider_type,
-                display_name = excluded.display_name
+                display_name = excluded.display_name,
+                account_name = excluded.account_name,
+                server_host = excluded.server_host,
+                server_port = excluded.server_port
             "#,
-            params![email, provider_type, display_name],
+            params![email, provider_type, display_name, account_name, server_host, server_port],
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, email, provider_type, display_name FROM accounts WHERE email = ?1",
+            "SELECT id, email, provider_type, display_name, account_name, server_host, server_port FROM accounts WHERE email = ?1",
         )?;
         let account = stmt.query_row(params![email], |row| {
             Ok(AccountRecord {
@@ -237,6 +324,9 @@ impl MailStorageRepository {
                 email: row.get(1)?,
                 provider_type: row.get(2)?,
                 display_name: row.get(3)?,
+                account_name: row.get(4)?,
+                server_host: row.get(5)?,
+                server_port: row.get(6)?,
             })
         })?;
         Ok(account)
@@ -245,7 +335,7 @@ impl MailStorageRepository {
     pub fn get_account(&self, id: i64) -> Result<Option<AccountRecord>, StorageError> {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn
-            .prepare("SELECT id, email, provider_type, display_name FROM accounts WHERE id = ?1")?;
+            .prepare("SELECT id, email, provider_type, display_name, account_name, server_host, server_port FROM accounts WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(AccountRecord {
@@ -253,6 +343,9 @@ impl MailStorageRepository {
                 email: row.get(1)?,
                 provider_type: row.get(2)?,
                 display_name: row.get(3)?,
+                account_name: row.get(4)?,
+                server_host: row.get(5)?,
+                server_port: row.get(6)?,
             }))
         } else {
             Ok(None)
@@ -263,18 +356,24 @@ impl MailStorageRepository {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             r#"
-            INSERT INTO accounts (id, email, provider_type, display_name)
-            VALUES (?1, ?2, ?3, ?4)
+            INSERT INTO accounts (id, email, provider_type, display_name, account_name, server_host, server_port)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(id) DO UPDATE SET
                 email = excluded.email,
                 provider_type = excluded.provider_type,
-                display_name = excluded.display_name
+                display_name = excluded.display_name,
+                account_name = excluded.account_name,
+                server_host = excluded.server_host,
+                server_port = excluded.server_port
             "#,
             params![
                 account.id,
                 account.email,
                 account.provider_type,
-                account.display_name
+                account.display_name,
+                account.account_name,
+                account.server_host,
+                account.server_port
             ],
         )?;
         Ok(())
@@ -283,7 +382,7 @@ impl MailStorageRepository {
     pub fn list_accounts(&self) -> Result<Vec<AccountRecord>, StorageError> {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
-            "SELECT id, email, provider_type, display_name FROM accounts ORDER BY id ASC",
+            "SELECT id, email, provider_type, display_name, account_name, server_host, server_port FROM accounts ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(AccountRecord {
@@ -291,6 +390,9 @@ impl MailStorageRepository {
                 email: row.get(1)?,
                 provider_type: row.get(2)?,
                 display_name: row.get(3)?,
+                account_name: row.get(4)?,
+                server_host: row.get(5)?,
+                server_port: row.get(6)?,
             })
         })?;
 
@@ -299,6 +401,21 @@ impl MailStorageRepository {
             accounts.push(acc?);
         }
         Ok(accounts)
+    }
+
+    pub fn update_account_name(&self, id: i64, name: Option<&str>) -> Result<(), StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        conn.execute(
+            "UPDATE accounts SET account_name = ?1 WHERE id = ?2",
+            params![name, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn vacuum(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        conn.execute("VACUUM", [])?;
+        Ok(())
     }
 
     /// Deletes an account and all its associated cached emails from storage.
@@ -386,7 +503,10 @@ impl MailStorageRepository {
                 COALESCE(SUM(size_bytes), 0) as total_size,
                 COALESCE(SUM(CASE WHEN classification = 'PURGEABLE' THEN 1 ELSE 0 END), 0) as purgeable_count,
                 COALESCE(SUM(CASE WHEN classification = 'PURGEABLE' THEN size_bytes ELSE 0 END), 0) as purgeable_size,
-                COALESCE(SUM(CASE WHEN classification != 'PURGEABLE' THEN 1 ELSE 0 END), 0) as protected_count
+                COALESCE(SUM(CASE WHEN classification != 'PURGEABLE' THEN 1 ELSE 0 END), 0) as protected_count,
+                COALESCE(MAX(received_at), 0) as last_received_at,
+                COUNT(DISTINCT CASE WHEN (has_unsubscribe = 1 OR list_id IS NOT NULL OR list_unsubscribe IS NOT NULL) THEN COALESCE(list_id, sender_address) END) as list_count,
+                COALESCE(MAX(CASE WHEN has_unsubscribe = 1 THEN 1 ELSE 0 END), 0) as has_any_unsub
             FROM emails
             WHERE account_id = ?1
             GROUP BY root_domain
@@ -401,8 +521,13 @@ impl MailStorageRepository {
             let purgeable_count: i64 = row.get(3)?;
             let purgeable_size: i64 = row.get(4)?;
             let protected_count: i64 = row.get(5)?;
+            let last_received_at: i64 = row.get(6)?;
+            let list_count: i64 = row.get(7)?;
+            let has_any_unsub: i64 = row.get(8)?;
             let is_personal_domain =
                 crate::personal_domains::is_personal_email_provider(&root_domain);
+            let is_suspicious_spam =
+                is_suspicious_domain(&root_domain, total_emails as u64, has_any_unsub > 0);
 
             Ok(DomainStats {
                 root_domain,
@@ -412,6 +537,9 @@ impl MailStorageRepository {
                 purgeable_size: purgeable_size as u64,
                 protected_count: protected_count as u64,
                 is_personal_domain,
+                last_received_at,
+                list_count: list_count as u32,
+                is_suspicious_spam,
             })
         })?;
 
@@ -501,7 +629,7 @@ impl MailStorageRepository {
             r#"
             SELECT 
                 uid, sender_address, size_bytes, has_unsubscribe,
-                list_id, list_unsubscribe, list_unsubscribe_post
+                list_id, list_unsubscribe, list_unsubscribe_post, received_at
             FROM emails
             WHERE account_id = ?1 AND root_domain = ?2 AND (has_unsubscribe = 1 OR list_id IS NOT NULL OR list_unsubscribe IS NOT NULL)
             ORDER BY received_at DESC
@@ -516,6 +644,7 @@ impl MailStorageRepository {
             uids: Vec<u32>,
             unsub_header: Option<String>,
             post_header: Option<String>,
+            last_received_at: i64,
         }
 
         let mut map: std::collections::HashMap<String, ListAccumulator> =
@@ -529,6 +658,7 @@ impl MailStorageRepository {
             let list_id: Option<String> = row.get(4)?;
             let list_unsubscribe: Option<String> = row.get(5)?;
             let list_unsubscribe_post: Option<String> = row.get(6)?;
+            let received_at: i64 = row.get(7)?;
 
             Ok((
                 uid as u32,
@@ -537,11 +667,12 @@ impl MailStorageRepository {
                 list_id,
                 list_unsubscribe,
                 list_unsubscribe_post,
+                received_at,
             ))
         })?;
 
         for item in rows {
-            let (uid, sender, size, list_id_opt, unsub_opt, post_opt) = item?;
+            let (uid, sender, size, list_id_opt, unsub_opt, post_opt, received_at) = item?;
             let group_key = list_id_opt
                 .as_ref()
                 .filter(|s| !s.trim().is_empty())
@@ -564,12 +695,14 @@ impl MailStorageRepository {
                     uids: Vec::new(),
                     unsub_header: unsub_opt.clone(),
                     post_header: post_opt.clone(),
+                    last_received_at: received_at,
                 }
             });
 
             entry.email_count += 1;
             entry.total_size += size;
             entry.uids.push(uid);
+            entry.last_received_at = entry.last_received_at.max(received_at);
             if entry.unsub_header.is_none() && unsub_opt.is_some() {
                 entry.unsub_header = unsub_opt;
                 entry.post_header = post_opt;
@@ -596,6 +729,7 @@ impl MailStorageRepository {
                 method: unsub_info.method,
                 target: unsub_info.target,
                 post_body: unsub_info.post_body,
+                last_received_at: acc.last_received_at,
             });
         }
 
@@ -677,5 +811,62 @@ impl MailStorageRepository {
             params![snippet, account_id, folder_path, uid as i64],
         )?;
         Ok(())
+    }
+
+    pub fn unprotect_domain_emails(
+        &self,
+        account_id: i64,
+        root_domain: &str,
+    ) -> Result<usize, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let count = conn.execute(
+            "UPDATE emails SET classification = 'PURGEABLE' WHERE account_id = ?1 AND root_domain = ?2 AND classification != 'PURGEABLE'",
+            params![account_id, root_domain],
+        )?;
+        Ok(count)
+    }
+
+    pub fn reclassify_domain_emails(
+        &self,
+        account_id: i64,
+        root_domain: &str,
+        classifier_config: &ClassifierConfig,
+        now: i64,
+    ) -> Result<usize, StorageError> {
+        let emails = self.get_emails_by_domain(account_id, root_domain)?;
+        let mut updated = 0;
+        let mut conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE emails SET classification = ?1 WHERE account_id = ?2 AND folder_path = ?3 AND uid = ?4",
+            )?;
+            for email in emails {
+                let new_class = crate::classifier::classify_email(
+                    &crate::classifier::EmailMetadataInput {
+                        uid: email.uid,
+                        subject: &email.subject,
+                        received_at_timestamp: email.received_at,
+                        is_flagged: email.is_flagged,
+                        has_unsubscribe: email.has_unsubscribe,
+                        attachment_names: &email.attachment_names,
+                        root_domain: Some(&email.root_domain),
+                    },
+                    classifier_config,
+                    now,
+                );
+                if new_class != email.classification {
+                    stmt.execute(params![
+                        new_class.as_str(),
+                        account_id,
+                        email.folder_path,
+                        email.uid
+                    ])?;
+                    updated += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(updated)
     }
 }

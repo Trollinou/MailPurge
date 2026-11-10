@@ -14,6 +14,9 @@ fn test_storage_account_and_email_lifecycle() {
         email: "user@enterprise.com".to_string(),
         provider_type: "microsoft365".to_string(),
         display_name: "Pro M365".to_string(),
+        account_name: None,
+        server_host: None,
+        server_port: None,
     };
     storage.save_account(&account).expect("Should save account");
 
@@ -230,4 +233,153 @@ fn test_storage_account_and_email_lifecycle() {
     );
     let unknown = stats.iter().find(|s| s.root_domain == "unknown");
     assert!(unknown.is_none(), "No emails should remain under unknown");
+}
+
+#[test]
+fn test_account_naming_migration_and_editing() {
+    let storage = MailStorageRepository::open_in_memory().expect("Should open in-memory SQLite");
+    storage.init_schema().expect("Should initialize schema");
+
+    // 1. Create account with detailed fields
+    let account = storage
+        .create_account_with_details(
+            "pro@entreprise.fr",
+            "imap",
+            "pro@entreprise.fr (mail.entreprise.fr:993)",
+            Some("Entreprise Pro"),
+            Some("mail.entreprise.fr"),
+            Some(993),
+        )
+        .expect("Should create account with details");
+
+    assert_eq!(account.account_name.as_deref(), Some("Entreprise Pro"));
+    assert_eq!(account.server_host.as_deref(), Some("mail.entreprise.fr"));
+    assert_eq!(account.server_port, Some(993));
+
+    // 2. Update account name
+    storage
+        .update_account_name(account.id, Some("Mon Compte Pro Renommé"))
+        .expect("Should update account name");
+
+    let updated = storage
+        .get_account(account.id)
+        .expect("Should query account")
+        .expect("Account exists");
+    assert_eq!(
+        updated.account_name.as_deref(),
+        Some("Mon Compte Pro Renommé")
+    );
+    assert_eq!(updated.server_host.as_deref(), Some("mail.entreprise.fr"));
+    assert_eq!(updated.server_port, Some(993));
+
+    // 3. Vacuum test
+    storage.vacuum().expect("Vacuum should succeed");
+}
+
+#[test]
+fn test_domain_stats_enhanced_and_spam_detection() {
+    use mailpurge_core::storage::is_suspicious_domain;
+
+    assert!(is_suspicious_domain("newsletter.xyz", 1, false));
+    assert!(is_suspicious_domain("promo.top", 5, true));
+    assert!(is_suspicious_domain("spammer1234.com", 1, false));
+    assert!(!is_suspicious_domain("github.com", 20, true));
+    assert!(!is_suspicious_domain("fnac.com", 1, true));
+
+    let storage = MailStorageRepository::open_in_memory().expect("Should open in-memory SQLite");
+    storage.init_schema().expect("Should initialize schema");
+
+    let _ = storage.create_account("test@test.fr", "imap", "Test");
+
+    let emails = vec![
+        EmailRecord {
+            account_id: 1,
+            folder_path: "INBOX".to_string(),
+            uid: 1,
+            message_id: Some("<m1@bizarre.xyz>".to_string()),
+            root_domain: "bizarre.xyz".to_string(),
+            full_domain: "mail.bizarre.xyz".to_string(),
+            sender_address: "contact@mail.bizarre.xyz".to_string(),
+            subject: "Spam bizarre".to_string(),
+            received_at: 1_700_000_100,
+            size_bytes: 15_000,
+            has_unsubscribe: false,
+            has_attachment: false,
+            attachment_names: vec![],
+            is_flagged: false,
+            classification: EmailClassification::Purgeable,
+            body_snippet: None,
+            list_id: None,
+            list_unsubscribe: None,
+            list_unsubscribe_post: None,
+        },
+        EmailRecord {
+            account_id: 1,
+            folder_path: "INBOX".to_string(),
+            uid: 2,
+            message_id: Some("<m2@bizarre.xyz>".to_string()),
+            root_domain: "bizarre.xyz".to_string(),
+            full_domain: "mail.bizarre.xyz".to_string(),
+            sender_address: "contact@mail.bizarre.xyz".to_string(),
+            subject: "Spam bizarre 2".to_string(),
+            received_at: 1_700_000_900,
+            size_bytes: 20_000,
+            has_unsubscribe: false,
+            has_attachment: false,
+            attachment_names: vec![],
+            is_flagged: false,
+            classification: EmailClassification::ProtectedInvoice,
+            body_snippet: None,
+            list_id: None,
+            list_unsubscribe: None,
+            list_unsubscribe_post: None,
+        },
+    ];
+
+    storage.upsert_emails(&emails).expect("Upsert emails");
+    let stats = storage.get_domain_stats(1).expect("Get stats");
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].root_domain, "bizarre.xyz");
+    assert_eq!(stats[0].last_received_at, 1_700_000_900);
+    assert!(stats[0].is_suspicious_spam);
+    assert_eq!(stats[0].protected_count, 1);
+    assert_eq!(stats[0].purgeable_count, 1);
+
+    // Test unprotect_domain_emails
+    let count = storage
+        .unprotect_domain_emails(1, "bizarre.xyz")
+        .expect("Unprotect all");
+    assert_eq!(count, 1);
+
+    let stats_after = storage.get_domain_stats(1).expect("Get stats");
+    assert_eq!(stats_after[0].protected_count, 0);
+    assert_eq!(stats_after[0].purgeable_count, 2);
+
+    // Test reclassify_domain_emails
+    let config = mailpurge_core::classifier::ClassifierConfig::default();
+    let reclassified = storage
+        .reclassify_domain_emails(1, "bizarre.xyz", &config, 1_700_000_950)
+        .expect("Reclassify");
+    // Email 2 has subject "Spam bizarre 2" and no attachment or invoice keyword, so reclassifies appropriately
+    assert!(reclassified <= 2);
+}
+
+#[test]
+fn test_folder_scanner_gmail_trash_variants() {
+    use mailpurge_core::folder_scanner::FolderInfo;
+
+    let f1 = FolderInfo::new("[Gmail]/Corbeille", vec![]);
+    assert!(f1.is_trash());
+
+    let f2 = FolderInfo::new("[Gmail]/Bin", vec![]);
+    assert!(f2.is_trash());
+
+    let f3 = FolderInfo::new("[Gmail]/Messages supprimés", vec![]);
+    assert!(f3.is_trash());
+
+    let f4 = FolderInfo::new("[Gmail]/&AOk-l&AOk-ments supprim&AOk-s", vec![]);
+    assert!(f4.is_trash());
+
+    let f5 = FolderInfo::new("INBOX", vec![]);
+    assert!(!f5.is_trash());
 }

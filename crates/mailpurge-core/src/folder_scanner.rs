@@ -48,11 +48,22 @@ impl FolderInfo {
                 | "deleted items"
                 | "elements supprimes"
                 | "deleted messages"
+                | "messages supprimes"
                 | "supprimes"
                 | "papierkorb"
                 | "papelera"
                 | "cestino"
-        )
+                | "bin"
+                | "deleted"
+        ) || normalized.contains("[gmail]/corbeille")
+            || normalized.contains("[gmail]/trash")
+            || normalized.contains("[gmail]/bin")
+            || normalized.contains("[gmail]/messages supprimes")
+            || self.path.to_lowercase().contains("&aok-l&aok-ments")
+            || (self.path.to_lowercase().contains("supprim")
+                && (self.path.to_lowercase().contains("gmail")
+                    || self.path.to_lowercase().contains("element")
+                    || self.path.to_lowercase().contains("message")))
     }
 
     /// Determines if this folder can be scanned for purge candidates.

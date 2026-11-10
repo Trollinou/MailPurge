@@ -2,7 +2,8 @@
 import { onMounted, ref } from "vue";
 import { useMailStore, formatBytes } from "./stores/mailStore";
 import AddAccountModal from "./components/AddAccountModal.vue";
-import type { AccountRecord } from "./types";
+import EditAccountModal from "./components/EditAccountModal.vue";
+import type { AccountRecord, DomainStats } from "./types";
 import {
   Mail,
   Trash2,
@@ -16,6 +17,7 @@ import {
   Star,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Inbox,
   Clock,
   Sparkles,
@@ -33,16 +35,70 @@ import {
   RefreshCw,
   Loader2,
   KeyRound,
+  Edit3,
 } from "lucide-vue-next";
 
 const store = useMailStore();
 const isAddAccountModalOpen = ref(false);
+const isEditAccountModalOpen = ref(false);
+const accountToEdit = ref<AccountRecord | null>(null);
+
 const isPasswordModalOpen = ref(false);
 const newPassword = ref("");
 const passwordError = ref("");
 const isSubmittingPassword = ref(false);
+
 const accountToDelete = ref<AccountRecord | null>(null);
 const isDeletingAccount = ref(false);
+
+const forcePurgeDomain = ref<DomainStats | null>(null);
+const isExecutingForcePurge = ref(false);
+
+const isConfirmUnprotectModalOpen = ref(false);
+
+function openEditAccountModal(account: AccountRecord) {
+  accountToEdit.value = account;
+  isEditAccountModalOpen.value = true;
+}
+
+async function openForcePurgeModal(domain: DomainStats) {
+  forcePurgeDomain.value = domain;
+  if (store.selectedDomain !== domain.root_domain) {
+    await store.selectDomain(domain.root_domain);
+  }
+}
+
+async function handleExecuteForcePurge() {
+  if (!forcePurgeDomain.value) return;
+  try {
+    isExecutingForcePurge.value = true;
+    await store.purgeAllDomainEmails(forcePurgeDomain.value.root_domain);
+    forcePurgeDomain.value = null;
+  } catch (err) {
+    console.error("Force purge error:", err);
+  } finally {
+    isExecutingForcePurge.value = false;
+  }
+}
+
+async function handleConfirmUnprotect() {
+  if (!store.selectedDomain) return;
+  try {
+    await store.unprotectAllDomainEmails(store.selectedDomain);
+    isConfirmUnprotectModalOpen.value = false;
+  } catch (err) {
+    console.error("Unprotect all error:", err);
+  }
+}
+
+async function handleReclassifyDomain() {
+  if (!store.selectedDomain) return;
+  try {
+    await store.reclassifyDomainEmails(store.selectedDomain);
+  } catch (err) {
+    console.error("Reclassify domain error:", err);
+  }
+}
 
 async function executeDeleteAccount() {
   if (!accountToDelete.value) return;
@@ -78,6 +134,7 @@ onMounted(async () => {
 });
 
 function formatDate(ts: number): string {
+  if (!ts) return "";
   const d = new Date(ts * 1000);
   return d.toLocaleDateString("fr-FR", {
     day: "2-digit",
@@ -86,6 +143,19 @@ function formatDate(ts: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatRelativeDate(ts: number): string {
+  if (!ts) return "";
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - ts;
+  if (diff < 60) return "à l'instant";
+  if (diff < 3600) return `il y a ${Math.floor(diff / 60)} min`;
+  if (diff < 86400) return `il y a ${Math.floor(diff / 3600)} h`;
+  if (diff < 86400 * 30) return `il y a ${Math.floor(diff / 86400)} j`;
+  if (diff < 86400 * 365) return `il y a ${Math.floor(diff / (86400 * 30))} mois`;
+  const years = Math.floor(diff / (86400 * 365));
+  return `il y a ${years} an${years > 1 ? "s" : ""}`;
 }
 </script>
 
@@ -150,8 +220,8 @@ function formatDate(ts: number): string {
               ]"
             >
               <div class="flex items-center justify-between w-full">
-                <span class="font-medium truncate text-xs">{{ account.display_name }}</span>
-                <div class="flex items-center gap-1.5">
+                <span class="font-medium truncate text-xs">{{ account.account_name || account.email }}</span>
+                <div class="flex items-center gap-1">
                   <button
                     v-if="store.currentAccountId === account.id"
                     @click.stop="store.syncCurrentAccount"
@@ -160,6 +230,13 @@ function formatDate(ts: number): string {
                     title="Synchroniser la boîte maintenant"
                   >
                     <RefreshCw :class="['w-3 h-3', store.isSyncing ? 'animate-spin text-sky-400' : '']" />
+                  </button>
+                  <button
+                    @click.stop="openEditAccountModal(account)"
+                    class="text-slate-400 hover:text-sky-400 p-1 rounded hover:bg-slate-800/80 transition"
+                    title="Modifier le nom du compte"
+                  >
+                    <Edit3 class="w-3 h-3" />
                   </button>
                   <button
                     v-if="account.id !== 1"
@@ -181,7 +258,8 @@ function formatDate(ts: number): string {
                   </span>
                 </div>
               </div>
-              <span class="text-[11px] text-slate-400 truncate">{{ account.email }}</span>
+              <span v-if="account.account_name" class="text-[11px] text-slate-400 truncate">{{ account.email }}</span>
+              <span v-else-if="account.server_host" class="text-[11px] text-slate-400 truncate font-mono text-[10px]">{{ account.server_host }}</span>
             </div>
 
             <div
@@ -303,8 +381,12 @@ function formatDate(ts: number): string {
       <!-- En-tête avec Recherche et Tri -->
       <header class="p-4 border-b border-slate-800 flex items-center justify-between gap-4">
         <div>
-          <h2 class="text-base font-semibold text-white">Domaines Détectés</h2>
-          <p class="text-xs text-slate-400">Regroupement par domaine racine (eTLD+1)</p>
+          <h2 class="text-base font-semibold text-white truncate max-w-sm" :title="store.currentAccount?.account_name || store.currentAccount?.email">
+            {{ store.currentAccount?.account_name || store.currentAccount?.email || "Domaines Détectés" }}
+          </h2>
+          <p class="text-xs text-slate-400">
+            {{ store.filteredDomainStats.length }} domaine{{ store.filteredDomainStats.length > 1 ? 's' : '' }} détecté{{ store.filteredDomainStats.length > 1 ? 's' : '' }} (eTLD+1)
+          </p>
         </div>
 
         <div class="flex items-center space-x-2.5">
@@ -345,6 +427,18 @@ function formatDate(ts: number): string {
               title="Trier par ordre alphabétique"
             >
               A-Z
+            </button>
+            <button
+              @click="store.sortBy = 'date'"
+              :class="[
+                'px-2.5 py-1 rounded transition text-xs font-medium',
+                store.sortBy === 'date'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              ]"
+              title="Trier par date du dernier email reçu"
+            >
+              Date
             </button>
           </div>
 
@@ -490,10 +584,29 @@ function formatDate(ts: number): string {
                   <User class="w-3 h-3 text-sky-400" />
                   <span>Messagerie Personnelle</span>
                 </span>
+                <span
+                  v-if="domain.list_count && domain.list_count > 0"
+                  class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-950/80 text-indigo-300 border border-indigo-800/60 shrink-0"
+                  title="Nombre de listes d'envoi ou désabonnements distincts"
+                >
+                  {{ domain.list_count }} liste{{ domain.list_count > 1 ? 's' : '' }}
+                </span>
+                <span
+                  v-if="domain.is_suspicious_spam"
+                  class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-950/80 text-amber-300 border border-amber-800/60 flex items-center space-x-1 shrink-0"
+                  title="TLD ou motifs d'envoi suspects (spam potentiel)"
+                >
+                  <AlertTriangle class="w-3 h-3 text-amber-400" />
+                  <span>Spam suspect</span>
+                </span>
                 <span class="text-[11px] text-slate-500">({{ domain.total_emails }} mails)</span>
               </div>
-              <div class="flex items-center space-x-3 text-xs mt-1">
+              <div class="flex items-center space-x-2 text-xs mt-1">
                 <span class="text-slate-400">Total : {{ formatBytes(domain.total_size) }}</span>
+                <span v-if="domain.last_received_at" class="text-slate-500">•</span>
+                <span v-if="domain.last_received_at" class="text-slate-400" :title="formatDate(domain.last_received_at)">
+                  Dernier : {{ formatRelativeDate(domain.last_received_at) }}
+                </span>
               </div>
             </div>
           </div>
@@ -519,6 +632,15 @@ function formatDate(ts: number): string {
               <ShieldCheck class="w-3.5 h-3.5" />
               <span>{{ domain.protected_count }} protégé{{ domain.protected_count > 1 ? 's' : '' }}</span>
             </div>
+
+            <!-- Action Purger tout le domaine -->
+            <button
+              @click.stop="openForcePurgeModal(domain)"
+              class="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-800/40 transition shrink-0"
+              title="Purger définitivement TOUS les emails de ce domaine (y compris protégés)"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
@@ -664,6 +786,16 @@ function formatDate(ts: number): string {
             <component :is="store.allPurgeableSelected ? CheckSquare : Square" class="w-4 h-4" />
             <span>Tout sélectionner ({{ store.selectedUidsToPurge.size }} / {{ store.purgeableEmails.length }})</span>
           </button>
+
+          <button
+            @click="handleReclassifyDomain"
+            :disabled="store.isLoading"
+            class="px-2.5 py-1 rounded text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center space-x-1.5 transition disabled:opacity-50"
+            title="Forcer la réévaluation automatique de tous les emails du domaine selon les règles de protection"
+          >
+            <RotateCcw class="w-3.5 h-3.5 text-sky-400" />
+            <span>Réévaluer les règles</span>
+          </button>
         </div>
 
         <!-- Liste des emails candidats purgeables -->
@@ -751,6 +883,9 @@ function formatDate(ts: number): string {
                 <div class="text-[11px] text-slate-400 truncate mt-0.5" :title="list.sender_address">
                   {{ list.sender_address }}
                 </div>
+                <div v-if="list.last_received_at" class="text-[10px] text-slate-400 mt-0.5" :title="formatDate(list.last_received_at)">
+                  Dernier message : {{ formatRelativeDate(list.last_received_at) }} ({{ formatDate(list.last_received_at) }})
+                </div>
               </div>
 
               <!-- Badge Méthode Détectée -->
@@ -824,6 +959,23 @@ function formatDate(ts: number): string {
 
         <!-- Liste des emails protégés -->
         <div v-if="store.activeTab === 'protected'" class="space-y-2">
+          <!-- Barre d'action tout déprotéger -->
+          <div
+            v-if="store.protectedEmails.length > 0"
+            class="flex items-center justify-between pb-2 mb-1 border-b border-slate-800 text-xs text-slate-400"
+          >
+            <span class="font-medium text-slate-300">{{ store.protectedEmails.length }} email(s) protégé(s)</span>
+            <button
+              @click="isConfirmUnprotectModalOpen = true"
+              :disabled="store.isLoading"
+              class="px-2.5 py-1 rounded text-xs font-medium bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border border-amber-800/50 flex items-center space-x-1.5 transition disabled:opacity-50"
+              title="Reclasser tous les emails protégés de ce domaine comme candidats à la purge"
+            >
+              <ShieldAlert class="w-3.5 h-3.5 text-amber-400" />
+              <span>Tout déprotéger</span>
+            </button>
+          </div>
+
           <div
             v-for="email in store.protectedEmails"
             :key="email.uid"
@@ -875,8 +1027,9 @@ function formatDate(ts: number): string {
               {{ email.subject }}
             </div>
 
-            <div class="text-[11px] text-slate-400 truncate">
-              {{ email.sender_address }}
+            <div class="flex items-center justify-between text-[11px] text-slate-400">
+              <span class="truncate">{{ email.sender_address }}</span>
+              <span class="font-mono text-slate-500 shrink-0 ml-2">{{ formatDate(email.received_at) }}</span>
             </div>
 
             <div v-if="email.attachment_names.length > 0" class="text-[11px] text-emerald-400 flex items-center space-x-1">
@@ -1246,6 +1399,123 @@ function formatDate(ts: number): string {
           >
             <Loader2 v-if="isDeletingAccount" class="w-3.5 h-3.5 animate-spin" />
             <span>{{ isDeletingAccount ? "Suppression..." : "Supprimer définitivement" }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Édition de Compte -->
+    <EditAccountModal
+      :is-open="isEditAccountModalOpen"
+      :account="accountToEdit"
+      @close="isEditAccountModalOpen = false"
+    />
+
+    <!-- Modal Confirmation Force Purge Domaine (y compris protégés) -->
+    <div
+      v-if="forcePurgeDomain"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+    >
+      <div
+        class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+      >
+        <div class="flex items-center gap-3">
+          <div
+            class="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0"
+          >
+            <AlertTriangle class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-100">
+              Purger tout le domaine
+            </h3>
+            <p class="text-xs text-slate-400 font-mono">
+              {{ forcePurgeDomain.root_domain }}
+            </p>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-300 leading-relaxed">
+          Cette action va déplacer <strong>l'intégralité des {{ forcePurgeDomain.total_emails }} email(s)</strong> de ce domaine vers la corbeille.
+        </p>
+
+        <div
+          v-if="forcePurgeDomain.protected_count > 0"
+          class="p-3 rounded-xl bg-rose-950/40 border border-rose-800/50 text-xs text-rose-300 space-y-1"
+        >
+          <div class="font-semibold flex items-center gap-1.5">
+            <ShieldAlert class="w-4 h-4 text-rose-400 shrink-0" />
+            <span>Attention : {{ forcePurgeDomain.protected_count }} email(s) actuellement protégé(s)</span>
+          </div>
+          <p class="text-[11px] text-rose-200/90 leading-relaxed">
+            Même les emails contenant des factures, contrats, commandes ou marques de protection seront supprimés.
+          </p>
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2">
+          <button
+            @click="forcePurgeDomain = null"
+            class="px-3 py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+          >
+            Annuler
+          </button>
+          <button
+            @click="handleExecuteForcePurge"
+            :disabled="isExecutingForcePurge"
+            class="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-semibold rounded-xl text-xs flex items-center gap-1.5 transition shadow-lg shadow-rose-600/20"
+          >
+            <Loader2 v-if="isExecutingForcePurge" class="w-3.5 h-3.5 animate-spin" />
+            <Trash2 v-else class="w-3.5 h-3.5" />
+            <span>{{ isExecutingForcePurge ? "Purge en cours..." : "Confirmer la suppression totale" }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Confirmation Tout Déprotéger -->
+    <div
+      v-if="isConfirmUnprotectModalOpen && store.selectedDomain"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+    >
+      <div
+        class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+      >
+        <div class="flex items-center gap-3">
+          <div
+            class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0"
+          >
+            <ShieldAlert class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-100">
+              Tout déprotéger
+            </h3>
+            <p class="text-xs text-slate-400 font-mono">
+              {{ store.selectedDomain }}
+            </p>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-300 leading-relaxed">
+          Voulez-vous déprotéger les <strong>{{ store.protectedEmails.length }} email(s)</strong> de ce domaine ?
+          Ils seront tous reclassés comme <em>Candidats à la purge</em>.
+        </p>
+
+        <div class="flex items-center justify-end gap-2 pt-2">
+          <button
+            @click="isConfirmUnprotectModalOpen = false"
+            class="px-3 py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+          >
+            Annuler
+          </button>
+          <button
+            @click="handleConfirmUnprotect"
+            :disabled="store.isLoading"
+            class="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-slate-950 font-semibold rounded-xl text-xs flex items-center gap-1.5 transition shadow"
+          >
+            <Loader2 v-if="store.isLoading" class="w-3.5 h-3.5 animate-spin" />
+            <ShieldAlert v-else class="w-3.5 h-3.5" />
+            <span>Déprotéger tous les emails</span>
           </button>
         </div>
       </div>

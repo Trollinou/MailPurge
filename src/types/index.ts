@@ -3,6 +3,9 @@ export interface AccountRecord {
   email: string;
   provider_type: string;
   display_name: string;
+  account_name?: string | null;
+  server_host?: string | null;
+  server_port?: number | null;
 }
 
 export interface DomainStats {
@@ -13,6 +16,9 @@ export interface DomainStats {
   purgeable_size: number;
   protected_count: number;
   is_personal_domain?: boolean;
+  last_received_at?: number;
+  list_count?: number;
+  is_suspicious_spam?: boolean;
 }
 
 export type EmailClassification =
@@ -23,7 +29,7 @@ export type EmailClassification =
   | "PROTECTED_PERSONAL"
   | "RECENT";
 
-export type DomainSortOption = "size" | "count" | "alpha";
+export type DomainSortOption = "size" | "count" | "alpha" | "date";
 
 export interface EmailRecord {
   account_id: number;
@@ -66,6 +72,7 @@ export interface DistributionListGroup {
   method: UnsubscribeMethod;
   target: string | null;
   post_body: string | null;
+  last_received_at?: number;
 }
 
 export interface UnsubscribeReport {

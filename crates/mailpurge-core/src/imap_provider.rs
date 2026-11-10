@@ -869,6 +869,14 @@ impl MailProviderPort for ImapProvider {
                 }
             }
 
+            // Also execute UID STORE for servers (such as Gmail) that prefer UID-based flags in virtual trash
+            if let Ok(uid_store_stream) = session.uid_store("1:*", r"+FLAGS (\Deleted)").await {
+                tokio::pin!(uid_store_stream);
+                while let Some(res) = uid_store_stream.next().await {
+                    let _ = res.map_err(map_async_imap_error);
+                }
+            }
+
             let expunge_stream = session.expunge().await.map_err(map_async_imap_error)?;
             tokio::pin!(expunge_stream);
 

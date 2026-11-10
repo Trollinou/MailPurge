@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use mailpurge_core::classifier::{classify_email, ClassifierConfig, EmailMetadataInput};
@@ -23,7 +25,12 @@ pub async fn execute_sync(
     storage: &MailStorageRepository,
     account_id: i64,
     provider: &mut dyn MailProviderPort,
+    cancel_flag: Arc<AtomicBool>,
 ) -> Result<usize, String> {
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Ok(0);
+    }
+
     // 1. Initial connection & discovery phase
     let _ = app.emit(
         "scan-progress",
@@ -51,6 +58,9 @@ pub async fn execute_sync(
     let mut grand_total = 0usize;
 
     for folder in scannable_folders {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Ok(0);
+        }
         let count = match provider.get_folder_message_count(&folder.path).await {
             Ok(c) => c,
             Err(e) => {
@@ -92,6 +102,10 @@ pub async fn execute_sync(
     let mut seen_message_ids: HashSet<String> = HashSet::new();
 
     for (folder, folder_count) in folders_with_counts {
+        if cancel_flag.load(Ordering::Relaxed) {
+            eprintln!("[SyncEngine] Synchronisation annulée pour le compte ID={account_id}");
+            return Ok(total_scanned);
+        }
         if folder_count == 0 {
             continue;
         }
@@ -100,6 +114,10 @@ pub async fn execute_sync(
         let batch_size = 250u32;
 
         while seq <= folder_count {
+            if cancel_flag.load(Ordering::Relaxed) {
+                eprintln!("[SyncEngine] Synchronisation annulée pour le compte ID={account_id}");
+                return Ok(total_scanned);
+            }
             let end_seq = (seq + batch_size - 1).min(folder_count);
             let envelopes = match provider
                 .fetch_envelopes_range(&folder.path, seq, end_seq)

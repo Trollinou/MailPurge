@@ -56,6 +56,8 @@ export const useMailStore = defineStore("mail", {
         sorted.sort((a, b) => b.total_emails - a.total_emails);
       } else if (state.sortBy === "alpha") {
         sorted.sort((a, b) => a.root_domain.localeCompare(b.root_domain));
+      } else if (state.sortBy === "date") {
+        sorted.sort((a, b) => (b.last_received_at || 0) - (a.last_received_at || 0));
       }
 
       return sorted;
@@ -195,11 +197,19 @@ export const useMailStore = defineStore("mail", {
       server: string;
       port: number;
       providerType: string;
+      accountName?: string;
     }) {
       try {
         this.isLoading = true;
         this.statusMessage = `Vérification des identifiants et connexion à ${params.server}...`;
-        const account = await invoke<AccountRecord>("add_imap_account", params);
+        const account = await invoke<AccountRecord>("add_imap_account", {
+          email: params.email,
+          password: params.password,
+          server: params.server,
+          port: params.port,
+          providerType: params.providerType,
+          accountName: params.accountName || null,
+        });
         await this.fetchAccounts();
         await this.selectAccount(account.id);
         this.statusMessage = `Compte ${account.email} connecté avec succès ! Début du scan...`;
@@ -506,6 +516,103 @@ export const useMailStore = defineStore("mail", {
         await this.refreshDomainStats();
       } catch (err) {
         this.statusMessage = "Erreur lors du vidage corbeille: " + String(err);
+      } finally {
+        this.isPurging = false;
+      }
+    },
+
+    async updateAccountName(accountId: number, accountName: string) {
+      try {
+        await invoke("update_account_name", {
+          accountId,
+          accountName: accountName.trim() || null,
+        });
+        const acc = this.accounts.find((a) => a.id === accountId);
+        if (acc) {
+          acc.account_name = accountName.trim() || null;
+        }
+        this.statusMessage = "Nom du compte mis à jour avec succès.";
+      } catch (err) {
+        this.statusMessage = "Erreur mise à jour nom compte: " + String(err);
+        throw err;
+      }
+    },
+
+    async unprotectAllDomainEmails(rootDomain: string) {
+      if (!this.currentAccountId) return;
+      try {
+        this.isLoading = true;
+        const count = await invoke<number>("unprotect_domain_emails", {
+          accountId: this.currentAccountId,
+          rootDomain,
+        });
+        this.statusMessage = `${count} email(s) déprotégé(s) et reclassé(s) comme candidats à la purge.`;
+        await this.refreshDomainStats();
+        if (this.selectedDomain === rootDomain) {
+          await this.selectDomain(rootDomain);
+        }
+      } catch (err) {
+        this.statusMessage = "Erreur déprotection: " + String(err);
+        throw err;
+      } finally {
+        this.isLoading = false;
+      }
+    },
+
+    async reclassifyDomainEmails(rootDomain: string) {
+      if (!this.currentAccountId) return;
+      try {
+        this.isLoading = true;
+        const count = await invoke<number>("reclassify_domain_emails", {
+          accountId: this.currentAccountId,
+          rootDomain,
+        });
+        this.statusMessage = `Réévaluation terminée : ${count} email(s) mis à jour selon les règles de protection.`;
+        await this.refreshDomainStats();
+        if (this.selectedDomain === rootDomain) {
+          await this.selectDomain(rootDomain);
+        }
+      } catch (err) {
+        this.statusMessage = "Erreur réévaluation: " + String(err);
+        throw err;
+      } finally {
+        this.isLoading = false;
+      }
+    },
+
+    async purgeAllDomainEmails(rootDomain: string) {
+      if (!this.currentAccountId) return;
+      try {
+        this.isPurging = true;
+        const allUids = this.selectedDomainEmails.map((e) => e.uid);
+        if (allUids.length === 0) return;
+
+        // Déprotéger d'abord pour autoriser la suppression totale
+        await invoke("unprotect_domain_emails", {
+          accountId: this.currentAccountId,
+          rootDomain,
+        });
+
+        const report = await invoke<PurgeReport>("execute_purge", {
+          accountId: this.currentAccountId,
+          rootDomain,
+          uids: allUids,
+          dryRun: this.dryRunEnabled,
+        });
+
+        this.lastReport = report;
+        if (!this.dryRunEnabled) {
+          this.statusMessage = `Purge totale terminée : ${report.purged_count} emails déplacés vers la corbeille (${formatBytes(report.purged_bytes)}).`;
+          await this.refreshDomainStats();
+          if (this.selectedDomain === rootDomain) {
+            await this.selectDomain(rootDomain);
+          }
+        } else {
+          this.statusMessage = `[Simulation] Purge totale : ${report.purged_count} emails éligibles (${formatBytes(report.purged_bytes)}). Aucun email déplacé.`;
+        }
+      } catch (err) {
+        this.statusMessage = "Erreur purge totale du domaine: " + String(err);
+        throw err;
       } finally {
         this.isPurging = false;
       }

@@ -128,6 +128,16 @@
 
             <div class="space-y-3">
               <div class="space-y-1">
+                <label class="block text-xs font-medium text-slate-300">Nom du compte (optionnel)</label>
+                <input
+                  v-model="accountName"
+                  type="text"
+                  placeholder="Ex: Personnel, Pro, Association..."
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500"
+                />
+              </div>
+
+              <div class="space-y-1">
                 <label class="block text-xs font-medium text-slate-300">Adresse email Gmail</label>
                 <input
                   v-model="gmailEmail"
@@ -283,6 +293,15 @@
 
             <div class="space-y-3">
               <div class="space-y-1">
+                <label class="block text-xs font-medium text-slate-300">Nom du compte (optionnel)</label>
+                <input
+                  v-model="accountName"
+                  type="text"
+                  placeholder="Ex: Pro Outlook, Personnel..."
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500"
+                />
+              </div>
+              <div class="space-y-1">
                 <label class="block text-xs font-medium text-slate-300">Adresse email Outlook / Hotmail</label>
                 <input
                   v-model="outlookEmail"
@@ -339,6 +358,15 @@
 
           <div class="space-y-3">
             <div class="space-y-1">
+              <label class="block text-xs font-medium text-slate-300">Nom du compte (optionnel)</label>
+              <input
+                v-model="accountName"
+                type="text"
+                placeholder="Ex: Apple iCloud Personnel..."
+                class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500"
+              />
+            </div>
+            <div class="space-y-1">
               <label class="block text-xs font-medium text-slate-300">Adresse email iCloud</label>
               <input
                 v-model="icloudEmail"
@@ -374,6 +402,16 @@
         <!-- Custom IMAP Tab -->
         <div v-if="activeTab === 'imap'" class="space-y-4">
           <div class="space-y-3">
+            <div class="space-y-1">
+              <label class="block text-xs font-medium text-slate-300">Nom du compte (optionnel)</label>
+              <input
+                v-model="accountName"
+                type="text"
+                placeholder="Ex: Entreprise OVH, Mail Free..."
+                class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500"
+              />
+            </div>
+
             <div class="space-y-1">
               <label class="block text-xs font-medium text-slate-300">Adresse email</label>
               <input
@@ -461,6 +499,7 @@ const mailStore = useMailStore();
 const activeTab = ref<"google" | "microsoft365" | "icloud" | "imap">("google");
 const isSubmitting = ref(false);
 const errorMessage = ref("");
+const accountName = ref("");
 
 // Google modes
 const gmailMode = ref<"app_password" | "oauth">("app_password");
@@ -493,6 +532,7 @@ const tabs = [
 
 function close() {
   errorMessage.value = "";
+  accountName.value = "";
   emit("close");
 }
 
@@ -506,6 +546,7 @@ async function connectGmailAppPassword() {
       server: "imap.gmail.com",
       port: 993,
       providerType: "gmail",
+      accountName: accountName.value.trim() || undefined,
     });
     close();
   } catch (err) {
@@ -551,6 +592,7 @@ async function connectOutlookAppPassword() {
       server: "outlook.office365.com",
       port: 993,
       providerType: "outlook",
+      accountName: accountName.value.trim() || undefined,
     });
     close();
   } catch (err) {
@@ -570,6 +612,7 @@ async function connectIcloud() {
       server: "imap.mail.me.com",
       port: 993,
       providerType: "icloud",
+      accountName: accountName.value.trim() || undefined,
     });
     close();
   } catch (err) {
@@ -589,6 +632,7 @@ async function connectImap() {
       server: imapServer.value.trim(),
       port: imapPort.value || 993,
       providerType: "imap",
+      accountName: accountName.value.trim() || undefined,
     });
     close();
   } catch (err) {

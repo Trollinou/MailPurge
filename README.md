@@ -14,6 +14,12 @@
   - Les emails transactionnels (factures, reçus de paiement, bons de commande, garanties, contrats) sont sanctuarisés et protégés contre toute purge accidentelle.
   - Protection des expéditeurs personnels (fournisseurs FAI et webmails grand public).
   - Protection automatique des courriels récents (< 60 jours par défaut, configurable).
+  - Boutons de sécurité avancés : réévaluation automatique des règles de protection et déprotection globale par domaine avec confirmation.
+- **Gestion Flexible des Comptes & Domaines :**
+  - Nommage personnalisé des comptes et édition sans recréation.
+  - Annulation active de la synchronisation de fond lors de la suppression de compte, nettoyage du trousseau OS et compactage SQLite automatique (`VACUUM`).
+  - Affichage de la date du dernier message reçu par domaine et par liste, avec tri par date décroissante.
+  - Détection heuristique des domaines à risque (*Spam suspect*) et action de purge totale du domaine.
 - **Désabonnement en 1 Clic (RFC 8058 & RFC 2369) :**
   - Prise en charge du One-Click `List-Unsubscribe=One-Click` via requête HTTPS `POST`.
   - Prise en charge des liens de désinscription web (`https://...`) et des URI `mailto:`.
