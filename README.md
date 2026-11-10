@@ -33,6 +33,8 @@
   - Extraction à la demande sans marquer l'email comme lu (`BODY.PEEK[]`).
   - Décodage récursif de l'arborescence MIME (*Quoted-Printable*, *Base64*, *Multipart/Alternative*).
   - Élimination intégrale du code CSS (`<style>`, `@media`, règles typographiques) et des scripts (`<script>`) pour un texte clair et immédiatement lisible.
+  - Moteur résilient avec timeout strict (10s), consommation intégrale des buffers IMAP et persistance SQLite pour éviter les requêtes réseau répétitives.
+  - Interface réactive avec indicateur de chargement, gestion d'erreurs détaillée et bouton de réessai en cas d'indisponibilité temporaire du serveur.
 - **Confidentialité & Sécurité Maximale :**
   - 100 % local : aucun serveur tiers, aucune télémétrie.
   - Stockage des secrets exclusivement dans le trousseau sécurisé de l'OS (**macOS Keychain**, **Windows Credential Manager**, **Secret Service** sous Linux).
