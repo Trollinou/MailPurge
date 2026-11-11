@@ -40,6 +40,7 @@ Tout développement d'une nouvelle fonctionnalité ou correction de bug DOIT sui
 - **Encapsulation Synchrone dans Runtime Tokio (`spawn_blocking`) :** Tout appel I/O synchrone (`ureq::post`, `ureq::get`, ou accès disque SQLite avec `rusqlite`) invoqué depuis un contexte asynchrone Tokio DOIT être encapsulé dans `tokio::task::spawn_blocking(move || { ... }).await` afin de préserver la réactivité du pool de threads de travail et de l'interface Tauri.
 - **Journalisation Structurée :** Utiliser exclusivement l'écosystème `tracing` (`tracing::info!`, `tracing::debug!`, `tracing::warn!`, `tracing::error!`). L'usage de `println!` ou `eprintln!` est interdit dans le code applicatif hors tests.
 - **Tests Unitaires :** Dans les modules `#[cfg(test)]`, l'usage de `.unwrap()` ou `.expect("raison explicite")` est toléré via `#[allow(clippy::unwrap_used, clippy::expect_used)]`.
+- **Structuration des Tests d'Intégration (Point d'Entrée Unique) :** Afin de prévenir la multiplication des binaires de test compilés et l'explosion de l'empreinte disque (`target/debug/deps`), **ne jamais ajouter de fichiers `.rs` autonomes directement à la racine de `tests/`**. Tous les modules de test d'intégration doivent être placés dans un sous-dossier (ex: `tests/suite/`) et être enregistrés via un **unique point d'entrée** (`tests/integration_tests.rs`). Cela garantit qu'un seul exécutable de test est lié pour l'ensemble du package.
 
 ---
 

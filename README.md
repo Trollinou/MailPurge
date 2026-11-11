@@ -71,7 +71,7 @@ mailpurge/
 │   │   ├── spam_analyzer.rs      # Analyseur de verdicts d'authentification & anomalies
 │   │   ├── storage.rs            # Adaptateur SQLite avec cache partagé & tags
 │   │   └── unsubscribe.rs        # Moteur HTTP/Mailto RFC 8058 / RFC 2369
-│   └── tests/                    # Tests unitaires, TDD & intégration
+│   └── tests/                    # Tests d'intégration (point d'entrée unique integration_tests.rs + suite/)
 ├── src-tauri/                    # Couche applicative & IPC Tauri v2
 │   ├── src/
 │   │   ├── lib.rs                # Commandes Tauri exposées au frontend
@@ -156,3 +156,17 @@ Pour lancer toute la suite de validation en un seul appel :
 just qa
 # (ou ./scripts/qa.sh)
 ```
+
+---
+
+## ⚡ Optimisation des Builds & Empreinte Disque
+
+Pour prévenir le gonflement de `target/` lors de sessions TDD intensives avec Tauri :
+- **Symboles de débogage des dépendances désactivés (`debug = 0`)** dans `Cargo.toml` (`[profile.dev.package."*"]`) afin de diviser par 10 le poids des artefacts intermédiaires sans impacter le débogage du code métier (`debug = 1`).
+- **Point d'entrée unique de tests d'intégration** : tous les modules de tests résident dans `tests/suite/` et sont rattachés à `tests/integration_tests.rs`, évitant la multiplication des binaires liés volumineux.
+- **Nettoyage périodique des artefacts obsolètes** :
+  ```bash
+  just sweep        # Nettoie les fichiers de build inutilisés depuis plus de 7 jours
+  just sweep 1      # Nettoie les artefacts de plus de 24h
+  ```
+

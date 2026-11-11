@@ -57,3 +57,9 @@ coverage:
 # Mutation testing targeting domain modules
 mutants:
     cargo mutants --package mailpurge-core --file crates/mailpurge-core/src/domain/retention.rs
+
+# Clean compilation artifacts older than N days (default 7)
+sweep days="7":
+    @echo "==> Sweeping old compilation artifacts (older than {{days}} days)..."
+    cargo sweep --time {{days}}
+

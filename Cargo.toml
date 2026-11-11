@@ -26,3 +26,8 @@ todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
 
+[profile.dev.package."*"]
+debug = 0  # Ne stocke pas les symboles DWARF pour les crates tierces
+
+[profile.dev]
+debug = 1  # Laisse les numéros de ligne pour les backtraces de votre propre code
