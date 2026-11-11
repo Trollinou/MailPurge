@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { getVersion } from "@tauri-apps/api/app";
+import pkg from "../package.json";
 import { useMailStore, formatBytes } from "./stores/mailStore";
 import AddAccountModal from "./components/AddAccountModal.vue";
 import EditAccountModal from "./components/EditAccountModal.vue";
@@ -47,6 +49,7 @@ import {
 } from "lucide-vue-next";
 
 const store = useMailStore();
+const appVersion = ref(pkg.version ?? "0.9.0");
 const isAddAccountModalOpen = ref(false);
 const isEditAccountModalOpen = ref(false);
 const accountToEdit = ref<AccountRecord | null>(null);
@@ -154,6 +157,11 @@ async function handlePasswordSubmit() {
 }
 
 onMounted(async () => {
+  try {
+    appVersion.value = await getVersion();
+  } catch {
+    // Si hors environnement Tauri (ex: tests web isolés)
+  }
   await store.initSyncListener();
   await store.fetchAccounts();
   await store.fetchCommunityRules();
@@ -204,7 +212,7 @@ function formatRelativeDate(ts: number): string {
             </div>
           </div>
           <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-400 border border-indigo-800/60">
-            v0.1
+            v{{ appVersion }}
           </span>
         </div>
 
